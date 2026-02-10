@@ -1,17 +1,17 @@
 /**
  * LyricDisplay NDI Companion - Frame Capture
  * Manages continuous frame capture from headless browser pages.
- * Converts PNG screenshots to raw RGBA buffers for NDI transmission.
+ * Converts PNG screenshots (with alpha) to raw RGBA buffers for NDI transmission.
  * 
- * Uses CDP screencast as primary method (efficient, event-driven).
- * Falls back to polling screenshot if screencast is unavailable.
+ * Uses polling page.screenshot({ omitBackground: true }) to preserve transparency.
+ * CDP screencast does NOT support alpha channels, so we poll instead.
  */
 
 import { PNG } from 'pngjs';
 
 /**
  * Decode a PNG buffer to raw RGBA pixel data
- * @param {Buffer} pngBuffer - PNG image data
+ * @param {Buffer} pngBuffer - PNG image data (may include alpha channel)
  * @returns {Promise<{data: Buffer, width: number, height: number}>}
  */
 function decodePng(pngBuffer) {
@@ -32,7 +32,7 @@ function decodePng(pngBuffer) {
 }
 
 /**
- * Manages frame capture for a single output
+ * Manages frame capture for a single output via polling screenshots
  */
 class OutputCapture {
   constructor(options = {}) {
@@ -40,52 +40,34 @@ class OutputCapture {
     this.width = options.width || 1920;
     this.height = options.height || 1080;
     this.framerate = options.framerate || 30;
-    this.onFrame = options.onFrame || null; // callback(rgbaBuffer, width, height)
+    this.onFrame = options.onFrame || null;
 
-    this._stopScreencast = null;
     this._pollInterval = null;
     this._running = false;
+    this._capturing = false; // guard against overlapping captures
     this._frameCount = 0;
     this._lastFrameTime = 0;
-    this._minFrameInterval = 1000 / this.framerate;
 
     // Keep the latest frame for NDI to read at its own pace
     this._latestFrame = null;
   }
 
   /**
-   * Start capturing frames using CDP screencast
+   * Start capturing frames by polling screenshots from the browser page.
+   * Each screenshot uses omitBackground: true to preserve transparency.
+   * 
    * @param {Object} browserManager - BrowserManager instance
    */
-  async startScreencast(browserManager) {
+  async startPolling(browserManager) {
     if (this._running) return;
     this._running = true;
 
-    try {
-      this._stopScreencast = await browserManager.startScreencast(
-        this.outputKey,
-        this.framerate,
-        async (pngBuffer, metadata) => {
-          await this._processFrame(pngBuffer);
-        }
-      );
-
-      console.log(`[Capture] Screencast capture started for ${this.outputKey}`);
-    } catch (error) {
-      console.warn(`[Capture] Screencast failed for ${this.outputKey}, falling back to polling:`, error.message);
-      this._startPolling(browserManager);
-    }
-  }
-
-  /**
-   * Fallback: poll screenshots at the configured framerate
-   */
-  _startPolling(browserManager) {
     const intervalMs = Math.round(1000 / this.framerate);
 
     this._pollInterval = setInterval(async () => {
-      if (!this._running) return;
+      if (!this._running || this._capturing) return;
 
+      this._capturing = true;
       try {
         const pngBuffer = await browserManager.captureFrame(this.outputKey);
         if (pngBuffer) {
@@ -93,24 +75,21 @@ class OutputCapture {
         }
       } catch (error) {
         // Silently handle capture errors during polling
+      } finally {
+        this._capturing = false;
       }
     }, intervalMs);
 
-    console.log(`[Capture] Polling capture started for ${this.outputKey} at ${this.framerate}fps`);
+    console.log(`[Capture] Polling capture started for ${this.outputKey} at ${this.framerate}fps (${intervalMs}ms interval, transparent)`);
   }
 
   /**
    * Process a captured PNG frame into RGBA and deliver it
    */
   async _processFrame(pngBuffer) {
-    // Rate limit
-    const now = Date.now();
-    if (now - this._lastFrameTime < this._minFrameInterval * 0.8) {
-      return; // Skip frame if too soon
-    }
-
     try {
       const { data: rgbaBuffer, width, height } = await decodePng(pngBuffer);
+      const now = Date.now();
 
       this._latestFrame = {
         data: rgbaBuffer,
@@ -142,18 +121,10 @@ class OutputCapture {
   }
 
   /**
-   * Update framerate
+   * Update framerate (restarts polling if running)
    */
   setFramerate(fps) {
     this.framerate = fps;
-    this._minFrameInterval = 1000 / fps;
-
-    // If polling, restart with new interval
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      // We'd need the browserManager reference to restart polling
-      // This is handled by the orchestrator restarting the capture
-    }
   }
 
   /**
@@ -174,15 +145,6 @@ class OutputCapture {
    */
   async stop() {
     this._running = false;
-
-    if (this._stopScreencast) {
-      try {
-        await this._stopScreencast();
-      } catch {
-        // Already stopped
-      }
-      this._stopScreencast = null;
-    }
 
     if (this._pollInterval) {
       clearInterval(this._pollInterval);

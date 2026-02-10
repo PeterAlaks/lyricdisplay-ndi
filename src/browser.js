@@ -3,6 +3,9 @@
  * Manages headless Chromium via Puppeteer to render output pages identically to the real outputs.
  * Each enabled NDI output gets its own headless page at the correct viewport resolution.
  * 
+ * Uses page.screenshot({ omitBackground: true }) for frame capture to preserve transparency.
+ * CDP screencast does NOT support alpha channels, so we use polling screenshots instead.
+ * 
  * The output pages (output1, output2, stage) authenticate themselves automatically —
  * they don't need an admin key or join code. The server issues tokens freely to output client types.
  */
@@ -14,7 +17,7 @@ class BrowserManager {
   constructor(options = {}) {
     this.port = options.port || 4000;
     this.host = options.host || '127.0.0.1';
-    this.frontendUrl = options.frontendUrl || null; // If set, use this instead of host:port for page URLs
+    this.frontendUrl = options.frontendUrl || null;
     this.browser = null;
     this.pages = new Map(); // outputKey -> { page, width, height, route }
   }
@@ -56,13 +59,11 @@ class BrowserManager {
    * Launch the headless browser
    */
   async launch() {
-    // Wait for backend
     const backendReady = await this._waitForBackend();
     if (!backendReady) {
       throw new Error('Backend is not available');
     }
 
-    // Launch Puppeteer
     console.log('[Browser] Launching headless browser...');
     this.browser = await puppeteer.launch({
       headless: 'new',
@@ -88,21 +89,13 @@ class BrowserManager {
 
   /**
    * Create a page for a specific output at the given resolution.
-   * The page loads the same output URL the real Electron output windows use.
-   * Authentication happens automatically — output client types (output1, output2, stage)
-   * get tokens from the server without needing an admin key or join code.
-   * 
-   * @param {string} outputKey - 'output1', 'output2', or 'stage'
-   * @param {number} width - Viewport width
-   * @param {number} height - Viewport height
-   * @returns {Object} Page handle with capture capabilities
+   * Sets the default background to transparent so screenshots preserve alpha.
    */
   async createOutputPage(outputKey, width, height) {
     if (!this.browser) {
       throw new Error('Browser not launched');
     }
 
-    // Close existing page for this output if any
     await this.destroyOutputPage(outputKey);
 
     const routeMap = {
@@ -119,19 +112,22 @@ class BrowserManager {
     console.log(`[Browser] Creating page for ${outputKey} at ${width}x${height}...`);
 
     const page = await this.browser.newPage();
-
-    // Set viewport to the NDI output resolution
     await page.setViewport({ width, height, deviceScaleFactor: 1 });
 
-    // Navigate to the output page
-    // In dev mode (frontendUrl provided): http://localhost:5173/output1 (Vite dev server, path routing)
-    // In production: http://127.0.0.1:4000/#/output1 (Express serves built app, hash routing)
+    // Set the default background color to transparent via CDP.
+    // This is critical — without it, Chromium composites onto a white background
+    // and omitBackground in screenshot won't help for elements that inherit from body.
+    const cdpSession = await page.createCDPSession();
+    await cdpSession.send('Emulation.setDefaultBackgroundColorOverride', {
+      color: { r: 0, g: 0, b: 0, a: 0 }
+    });
+    await cdpSession.detach();
+
+    // Build the output URL
     let outputUrl;
     if (this.frontendUrl) {
-      // Dev mode: Vite uses path-based routing
       outputUrl = `${this.frontendUrl.replace(/\/$/, '')}${route}`;
     } else {
-      // Production: Express serves the built app with hash routing
       const baseUrl = `http://${this.host}:${this.port}`;
       outputUrl = `${baseUrl}/#${route}`;
     }
@@ -152,84 +148,29 @@ class BrowserManager {
   }
 
   /**
-   * Capture a screenshot from an output page as a PNG buffer
+   * Capture a screenshot from an output page as a PNG buffer with transparency.
+   * omitBackground: true produces a PNG with alpha channel where the page background is transparent.
+   * 
    * @param {string} outputKey - The output to capture
-   * @returns {Buffer|null} PNG buffer or null if page doesn't exist
+   * @returns {Buffer|null} PNG buffer (with alpha) or null if page doesn't exist
    */
   async captureFrame(outputKey) {
     const entry = this.pages.get(outputKey);
     if (!entry || !entry.page) return null;
 
     try {
-      const screenshotBuffer = await entry.page.screenshot({
+      return await entry.page.screenshot({
         type: 'png',
         omitBackground: true,
-        encoding: 'binary'
+        encoding: 'binary',
+        captureBeyondViewport: false
       });
-
-      return screenshotBuffer;
     } catch (error) {
       if (!error.message.includes('Target closed') && !error.message.includes('Session closed')) {
         console.error(`[Browser] Frame capture error for ${outputKey}:`, error.message);
       }
       return null;
     }
-  }
-
-  /**
-   * Set up CDP-based screencast for efficient continuous frame capture.
-   * Screencast delivers frames as they are painted — more efficient than polling screenshots.
-   * 
-   * @param {string} outputKey - The output to capture
-   * @param {number} maxFps - Maximum frames per second
-   * @param {Function} onFrame - Callback receiving (pngBuffer, metadata) for each frame
-   * @returns {Function} Stop function to end the screencast
-   */
-  async startScreencast(outputKey, maxFps, onFrame) {
-    const entry = this.pages.get(outputKey);
-    if (!entry || !entry.page) {
-      throw new Error(`No page for output: ${outputKey}`);
-    }
-
-    const cdpSession = await entry.page.createCDPSession();
-
-    cdpSession.on('Page.screencastFrame', async (params) => {
-      try {
-        // Acknowledge the frame to keep receiving
-        await cdpSession.send('Page.screencastFrameAck', {
-          sessionId: params.sessionId
-        });
-
-        // params.data is a base64-encoded image
-        const imageBuffer = Buffer.from(params.data, 'base64');
-        onFrame(imageBuffer, params.metadata);
-      } catch (error) {
-        if (!error.message.includes('Session closed') && !error.message.includes('Target closed')) {
-          console.error(`[Browser] Screencast frame error for ${outputKey}:`, error.message);
-        }
-      }
-    });
-
-    await cdpSession.send('Page.startScreencast', {
-      format: 'png',
-      quality: 100,
-      maxWidth: entry.width,
-      maxHeight: entry.height,
-      everyNthFrame: 1
-    });
-
-    console.log(`[Browser] Screencast started for ${outputKey} (max ${maxFps}fps)`);
-
-    // Return a stop function
-    return async () => {
-      try {
-        await cdpSession.send('Page.stopScreencast');
-        await cdpSession.detach();
-        console.log(`[Browser] Screencast stopped for ${outputKey}`);
-      } catch {
-        // Session may already be closed
-      }
-    };
   }
 
   /**

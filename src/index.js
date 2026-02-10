@@ -9,7 +9,7 @@
  * - For each enabled output, launches a headless Chromium page at the output's URL
  * - The page renders identically to the real browser output (same HTML/CSS/JS)
  * - Output pages authenticate themselves (no admin key or join code needed)
- * - Captures frames via CDP screencast and sends them over NDI via grandiose
+ * - Captures frames via polling screenshots (with transparency) and sends them over NDI via grandi
  */
 
 import SettingsManager from './settings.js';
@@ -91,8 +91,8 @@ async function createOutput(outputKey, config) {
     framerate: config.framerate || 30
   });
 
-  // Start capturing frames from the browser page
-  await capture.startScreencast(browserManager);
+  // Start capturing frames from the browser page (polling with transparency support)
+  await capture.startPolling(browserManager);
 
   // Start NDI sender - reads latest frame from capture
   ndiSender.startSending(() => capture.getLatestFrame());
