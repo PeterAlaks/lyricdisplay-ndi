@@ -118,7 +118,8 @@ try {
       stdio: 'inherit'
     });
   } else {
-    execSync(`cd "${distDir}" && zip -r "${archiveName}" lyricdisplay-ndi/`, {
+    // Use -j flag equivalent: cd into the build dir so paths are relative (no parent folder in zip)
+    execSync(`cd "${buildDir}" && zip -r "${archivePath}" .`, {
       stdio: 'inherit'
     });
   }
