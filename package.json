@@ -1,0 +1,19 @@
+{
+  "name": "lyricdisplay-ndi",
+  "version": "1.0.0",
+  "description": "NDI companion app for LyricDisplay - broadcasts lyric outputs as NDI video sources using headless browser rendering",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "puppeteer": "^23.11.1",
+    "grandi": "^1.3.0",
+    "chokidar": "^3.6.0",
+    "pngjs": "^7.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
