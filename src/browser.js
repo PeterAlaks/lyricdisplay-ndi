@@ -3,8 +3,8 @@
  * Manages headless Chromium via Puppeteer to render output pages identically to the real outputs.
  * Each enabled NDI output gets its own headless page at the correct viewport resolution.
  * 
- * Uses page.screenshot({ omitBackground: true }) for frame capture to preserve transparency.
- * CDP screencast does NOT support alpha channels, so we use polling screenshots instead.
+ * Uses a persistent CDP session with Page.captureScreenshot for fast transparent frame capture.
+ * The default background is set to transparent via Emulation.setDefaultBackgroundColorOverride.
  * 
  * The output pages (output1, output2, stage) authenticate themselves automatically —
  * they don't need an admin key or join code. The server issues tokens freely to output client types.
@@ -19,7 +19,7 @@ class BrowserManager {
     this.host = options.host || '127.0.0.1';
     this.frontendUrl = options.frontendUrl || null;
     this.browser = null;
-    this.pages = new Map(); // outputKey -> { page, width, height, route }
+    this.pages = new Map(); // outputKey -> { page, cdpSession, width, height, route }
   }
 
   /**
@@ -89,7 +89,8 @@ class BrowserManager {
 
   /**
    * Create a page for a specific output at the given resolution.
-   * Sets the default background to transparent so screenshots preserve alpha.
+   * Sets the default background to transparent and creates a persistent CDP session
+   * for fast frame capture.
    */
   async createOutputPage(outputKey, width, height) {
     if (!this.browser) {
@@ -114,14 +115,15 @@ class BrowserManager {
     const page = await this.browser.newPage();
     await page.setViewport({ width, height, deviceScaleFactor: 1 });
 
-    // Set the default background color to transparent via CDP.
-    // This is critical — without it, Chromium composites onto a white background
-    // and omitBackground in screenshot won't help for elements that inherit from body.
+    // Create a persistent CDP session for this page.
+    // Reusing the same session avoids the overhead of creating one per screenshot.
     const cdpSession = await page.createCDPSession();
+
+    // Set the default background color to transparent.
+    // This makes Page.captureScreenshot produce PNGs with alpha where the page has no background.
     await cdpSession.send('Emulation.setDefaultBackgroundColorOverride', {
       color: { r: 0, g: 0, b: 0, a: 0 }
     });
-    await cdpSession.detach();
 
     // Build the output URL
     let outputUrl;
@@ -141,32 +143,35 @@ class BrowserManager {
     // Wait for React to hydrate and socket to connect
     await new Promise(r => setTimeout(r, 3000));
 
-    this.pages.set(outputKey, { page, width, height, route });
+    this.pages.set(outputKey, { page, cdpSession, width, height, route });
 
     console.log(`[Browser] Page ready for ${outputKey}`);
     return { page, width, height };
   }
 
   /**
-   * Capture a screenshot from an output page as a PNG buffer with transparency.
-   * omitBackground: true produces a PNG with alpha channel where the page background is transparent.
+   * Capture a frame using the persistent CDP session.
+   * Uses Page.captureScreenshot with optimizeForSpeed for minimal latency.
+   * Returns a raw PNG Buffer with alpha channel.
    * 
    * @param {string} outputKey - The output to capture
-   * @returns {Buffer|null} PNG buffer (with alpha) or null if page doesn't exist
+   * @returns {Buffer|null} PNG buffer (with alpha) or null
    */
   async captureFrame(outputKey) {
     const entry = this.pages.get(outputKey);
-    if (!entry || !entry.page) return null;
+    if (!entry || !entry.cdpSession) return null;
 
     try {
-      return await entry.page.screenshot({
-        type: 'png',
-        omitBackground: true,
-        encoding: 'binary',
-        captureBeyondViewport: false
+      const result = await entry.cdpSession.send('Page.captureScreenshot', {
+        format: 'png',
+        optimizeForSpeed: true
       });
+
+      return Buffer.from(result.data, 'base64');
     } catch (error) {
-      if (!error.message.includes('Target closed') && !error.message.includes('Session closed')) {
+      if (!error.message.includes('Target closed') &&
+          !error.message.includes('Session closed') &&
+          !error.message.includes('detached')) {
         console.error(`[Browser] Frame capture error for ${outputKey}:`, error.message);
       }
       return null;
@@ -187,11 +192,19 @@ class BrowserManager {
   }
 
   /**
-   * Destroy a specific output page
+   * Destroy a specific output page and its CDP session
    */
   async destroyOutputPage(outputKey) {
     const entry = this.pages.get(outputKey);
     if (!entry) return;
+
+    try {
+      if (entry.cdpSession) {
+        await entry.cdpSession.detach();
+      }
+    } catch {
+      // Session may already be closed
+    }
 
     try {
       if (entry.page && !entry.page.isClosed()) {
