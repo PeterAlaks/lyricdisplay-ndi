@@ -14,6 +14,7 @@ class BrowserManager {
   constructor(options = {}) {
     this.port = options.port || 4000;
     this.host = options.host || '127.0.0.1';
+    this.frontendUrl = options.frontendUrl || null; // If set, use this instead of host:port for page URLs
     this.browser = null;
     this.pages = new Map(); // outputKey -> { page, width, height, route }
   }
@@ -123,9 +124,17 @@ class BrowserManager {
     await page.setViewport({ width, height, deviceScaleFactor: 1 });
 
     // Navigate to the output page
-    // The app uses hash routing in production: http://localhost:4000/#/output1
-    const baseUrl = `http://${this.host}:${this.port}`;
-    const outputUrl = `${baseUrl}/#${route}`;
+    // In dev mode (frontendUrl provided): http://localhost:5173/output1 (Vite dev server, path routing)
+    // In production: http://127.0.0.1:4000/#/output1 (Express serves built app, hash routing)
+    let outputUrl;
+    if (this.frontendUrl) {
+      // Dev mode: Vite uses path-based routing
+      outputUrl = `${this.frontendUrl.replace(/\/$/, '')}${route}`;
+    } else {
+      // Production: Express serves the built app with hash routing
+      const baseUrl = `http://${this.host}:${this.port}`;
+      outputUrl = `${baseUrl}/#${route}`;
+    }
     console.log(`[Browser] Navigating to ${outputUrl}`);
 
     await page.goto(outputUrl, {

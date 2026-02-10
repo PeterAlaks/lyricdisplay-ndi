@@ -23,7 +23,8 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const parsed = {
     port: 4000,
-    host: '127.0.0.1'
+    host: '127.0.0.1',
+    frontendUrl: null // If null, derived from host:port
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -33,6 +34,9 @@ function parseArgs() {
         break;
       case '--host':
         parsed.host = args[++i] || '127.0.0.1';
+        break;
+      case '--frontend-url':
+        parsed.frontendUrl = args[++i] || null;
         break;
     }
   }
@@ -228,6 +232,9 @@ async function main() {
   console.log('  LyricDisplay NDI Companion v1.0.0');
   console.log('===========================================');
   console.log(`  Backend: http://${cliArgs.host}:${cliArgs.port}`);
+  if (cliArgs.frontendUrl) {
+    console.log(`  Frontend: ${cliArgs.frontendUrl}`);
+  }
   console.log('');
 
   // Load settings
@@ -238,7 +245,8 @@ async function main() {
   // Launch headless browser
   browserManager = new BrowserManager({
     port: cliArgs.port,
-    host: cliArgs.host
+    host: cliArgs.host,
+    frontendUrl: cliArgs.frontendUrl
   });
 
   try {
