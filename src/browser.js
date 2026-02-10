@@ -81,6 +81,8 @@ class BrowserManager {
         '--disable-translate',
         '--mute-audio',
         '--hide-scrollbars',
+        '--force-device-scale-factor=1',
+        '--high-dpi-support=1',
       ]
     });
 
