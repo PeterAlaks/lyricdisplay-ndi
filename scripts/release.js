@@ -113,8 +113,8 @@ function buildDistributable() {
   logSuccess('Dependencies installed');
 
   // Install all grandi platform binaries so the zip works on any OS/arch.
-  // npm only installs the optionalDependency matching the build machine's platform,
-  // so we explicitly install all of them.
+  // npm refuses to install packages with mismatched os/cpu fields, so we
+  // download the tarballs directly and extract them manually.
   logStep('Installing grandi platform binaries for all targets...');
   const grandiPlatforms = [
     '@grandi/darwin-x64',
@@ -124,12 +124,42 @@ function buildDistributable() {
     '@grandi/win32-x64',
     '@grandi/win32-ia32'
   ];
-  for (const pkg of grandiPlatforms) {
+  for (const pkgName of grandiPlatforms) {
+    const destDir = path.join(ROOT, 'node_modules', pkgName.replace('/', path.sep));
+    if (fs.existsSync(destDir)) {
+      log(`Already present: ${pkgName}`);
+      continue;
+    }
     try {
-      execSync(`npm install ${pkg} --no-save`, { stdio: 'pipe', cwd: ROOT, timeout: 60000 });
-      log(`Installed ${pkg}`);
-    } catch {
-      log(`Skipped ${pkg} (not available or failed)`);
+      // Get the tarball URL from npm registry
+      const packOutput = execSync(`npm pack ${pkgName} --pack-destination "${distDir}" --json`, {
+        encoding: 'utf8', stdio: 'pipe', cwd: ROOT, timeout: 60000
+      });
+      // npm pack --json returns an array with filename info
+      let tarballFile;
+      try {
+        const packInfo = JSON.parse(packOutput);
+        tarballFile = path.join(distDir, packInfo[0].filename);
+      } catch {
+        // Fallback: find the .tgz file
+        const tgzFiles = fs.readdirSync(distDir).filter(f => f.startsWith('grandi-') && f.endsWith('.tgz'));
+        if (tgzFiles.length > 0) {
+          tarballFile = path.join(distDir, tgzFiles[tgzFiles.length - 1]);
+        }
+      }
+      if (tarballFile && fs.existsSync(tarballFile)) {
+        // Extract tarball — npm tarballs have a 'package/' prefix inside
+        fs.mkdirSync(destDir, { recursive: true });
+        execSync(`tar -xzf "${tarballFile}" -C "${destDir}" --strip-components=1`, {
+          stdio: 'pipe', cwd: ROOT, timeout: 30000
+        });
+        fs.unlinkSync(tarballFile);
+        log(`Installed ${pkgName}`);
+      } else {
+        log(`Skipped ${pkgName} (tarball not found)`);
+      }
+    } catch (err) {
+      log(`Skipped ${pkgName} (${err.message?.split('\n')[0] || 'failed'})`);
     }
   }
   logSuccess('Grandi platform binaries installed');
@@ -335,10 +365,26 @@ async function main() {
 
     // Step 4: Commit and tag
     logStep('Committing and tagging...');
-    safeExec('git add package.json package-lock.json');
-    safeExec(`git commit -m "chore: release ${tagName}"`);
+    safeExec('git add package.json');
+    // Also stage package-lock.json if it exists
+    try { safeExec('git add package-lock.json'); } catch { }
+    
+    // Check if there are staged changes to commit
+    let hasChanges = false;
+    try {
+      const diff = safeExec('git diff --cached --name-only');
+      hasChanges = diff.length > 0;
+    } catch { }
+
+    if (hasChanges) {
+      safeExec(`git commit -m "chore: release ${tagName}"`);
+      logSuccess('Commit created');
+    } else {
+      log('No file changes to commit (version unchanged)');
+    }
+
     safeExec(`git tag ${tagName}`);
-    logSuccess('Commit and tag created');
+    logSuccess(`Tag ${tagName} created`);
 
     // Step 5: Push
     logStep('Pushing to GitHub...');
