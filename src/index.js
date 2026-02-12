@@ -12,10 +12,19 @@
  * - Captures frames via polling screenshots (with transparency) and sends them over NDI via grandi
  */
 
+import { readFileSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { execSync } from 'child_process';
 import SettingsManager from './settings.js';
 import BrowserManager from './browser.js';
 import OutputCapture from './capture.js';
 import NdiSender from './ndi.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+const APP_VERSION = pkg.version || '1.0.0';
 
 // ============ Parse CLI Arguments ============
 
@@ -229,7 +238,7 @@ async function shutdown() {
 
 async function main() {
   console.log('===========================================');
-  console.log('  LyricDisplay NDI Companion v1.0.0');
+  console.log(`  LyricDisplay NDI Companion v${APP_VERSION}`);
   console.log('===========================================');
   console.log(`  Backend: http://${cliArgs.host}:${cliArgs.port}`);
   if (cliArgs.frontendUrl) {

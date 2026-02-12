@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "build": "node build.js"
+    "build": "node build.js",
+    "release": "node scripts/release.js"
   },
   "dependencies": {
     "puppeteer": "^23.11.1",
