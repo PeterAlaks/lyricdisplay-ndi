@@ -1,0 +1,83 @@
+name: Release Native Companion
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      NDI_RUNTIME_LIB_URL_WINDOWS: ${{ secrets.NDI_RUNTIME_LIB_URL_WINDOWS }}
+      NDI_RUNTIME_LIB_URL_MACOS: ${{ secrets.NDI_RUNTIME_LIB_URL_MACOS }}
+      NDI_RUNTIME_LIB_URL_LINUX: ${{ secrets.NDI_RUNTIME_LIB_URL_LINUX }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare Windows NDI runtime (optional)
+        if: runner.os == 'Windows' && env.NDI_RUNTIME_LIB_URL_WINDOWS != ''
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .ndi-runtime -Force | Out-Null
+          Invoke-WebRequest -Uri "$env:NDI_RUNTIME_LIB_URL_WINDOWS" -OutFile ".ndi-runtime/Processing.NDI.Lib.x64.dll"
+          Get-ChildItem .ndi-runtime
+
+      - name: Prepare macOS NDI runtime (optional)
+        if: runner.os == 'macOS' && env.NDI_RUNTIME_LIB_URL_MACOS != ''
+        shell: bash
+        run: |
+          mkdir -p .ndi-runtime
+          curl -fsSL "$NDI_RUNTIME_LIB_URL_MACOS" -o .ndi-runtime/libndi.dylib
+          ls -la .ndi-runtime
+
+      - name: Prepare Linux NDI runtime (optional)
+        if: runner.os == 'Linux' && env.NDI_RUNTIME_LIB_URL_LINUX != ''
+        shell: bash
+        run: |
+          mkdir -p .ndi-runtime
+          curl -fsSL "$NDI_RUNTIME_LIB_URL_LINUX" -o .ndi-runtime/libndi.so.6
+          ls -la .ndi-runtime
+
+      - name: Build platform archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path ".ndi-runtime") {
+            $env:NDI_RUNTIME_DIR = (Resolve-Path ".ndi-runtime").Path
+            Write-Host "Bundling NDI runtime from $env:NDI_RUNTIME_DIR"
+          }
+          node build.js
+
+      - name: Build platform archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ -d ".ndi-runtime" ]; then
+            export NDI_RUNTIME_DIR="$PWD/.ndi-runtime"
+            echo "Bundling NDI runtime from $NDI_RUNTIME_DIR"
+          fi
+          node build.js
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/lyricdisplay-ndi-*.zip
