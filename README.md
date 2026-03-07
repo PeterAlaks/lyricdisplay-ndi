@@ -1,89 +1,72 @@
-# LyricDisplay NDI Companion (Native Rust)
+# LyricDisplay NDI™ Companion
 
-Native companion process for [LyricDisplay](https://github.com/PeterAlaks/lyric-display-app).
+Headless Electron application that broadcasts [LyricDisplay](https://github.com/PeterAlaks/lyric-display-app) output pages over [NDI®](https://ndi.video) for use in OBS, vMix, and other NDI-capable production software.
 
-This repository is now native-only. The companion runtime is `lyricdisplay-ndi-native` (Rust) under [`native/`](./native/).
+## How it works
 
-## User Flow (Preserved in Main App)
+1. The main LyricDisplay app launches this companion automatically.
+2. The companion opens invisible (offscreen) browser windows that load the same output pages you see on screen.
+3. Each frame is captured via Chromium's offscreen rendering and sent over NDI using the [grandi](https://www.npmjs.com/package/grandi) native module.
+4. NDI receivers on the local network (OBS, vMix, Wirecast, etc.) pick up the streams with full transparency support.
 
-LyricDisplay still handles the full companion lifecycle from within the app:
+## Installation
 
-1. Download/install companion
-2. Launch/stop companion
-3. Enable/disable per-output NDI broadcast
-4. Check/update/uninstall companion
+End users do **not** need to install this manually. The main LyricDisplay app downloads, installs, and manages the companion automatically from the NDI settings panel.
 
-The main app downloads platform assets from GitHub Releases using:
-
-- `lyricdisplay-ndi-win.zip`
-- `lyricdisplay-ndi-mac.zip`
-- `lyricdisplay-ndi-linux.zip`
-
-Each zip contains `lyricdisplay-ndi-native` (`.exe` on Windows).
-
-To keep user setup zero-touch, platform runtime libraries can be bundled in the zip under `ndi-runtime/`.
-The main app auto-detects that folder and launches the companion with `NDILIB_REDIST_FOLDER`.
-
-## Local Development
-
-```bash
-cd lyricdisplay-ndi/native
-cargo run -- --host 127.0.0.1 --port 9137
-```
-
-## Build Release Asset
+### For development
 
 ```bash
 cd lyricdisplay-ndi
-node build.js
+npm install
 ```
 
-Output: `dist/lyricdisplay-ndi-<win|mac|linux>.zip`
-
-Optional runtime bundling:
+The companion is launched automatically by the main app during development. You can also run it standalone:
 
 ```bash
-set NDI_RUNTIME_DIR=C:\path\to\ndi-runtime
-node build.js
+npx electron . --host 127.0.0.1 --port 9137 --app-url http://localhost:5173 --no-hash
 ```
 
-If `NDI_RUNTIME_DIR` is set, `build.js` stages runtime libs and writes `ndi-runtime-manifest.json`.
+## CLI options
 
-## Release
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host <ip>` | `127.0.0.1` | IPC server bind address |
+| `--port <port>` | `9137` | IPC server port |
+| `--app-url <url>` | `http://127.0.0.1:4000` | Base URL of the LyricDisplay backend |
+| `--no-hash` | _(hash routing)_ | Use path-based routing (for dev with Vite) |
+
+## Building
 
 ```bash
-cd lyricdisplay-ndi
-node scripts/release.js --patch
+npm run build
 ```
 
-The release script:
+Produces a platform-specific `.zip` archive in `dist/` via electron-builder.
 
-1. Bumps version in `native/Cargo.toml` (and `package.json` mirror)
-2. Commits/tags/pushes
-3. Triggers GitHub Actions to build and upload platform zip assets
+## Releasing
 
-Optional for zero-touch runtime packaging:
-
-- Add repository secrets with direct downloadable runtime library URLs:
-  - `NDI_RUNTIME_LIB_URL_WINDOWS` -> `Processing.NDI.Lib.x64.dll`
-  - `NDI_RUNTIME_LIB_URL_MACOS` -> `libndi.dylib`
-  - `NDI_RUNTIME_LIB_URL_LINUX` -> `libndi.so.6`
-- Workflow will download these files into `.ndi-runtime/` and bundle them in release zips.
-
-## Repository Layout
-
-```text
-lyricdisplay-ndi/
-  native/
-    Cargo.toml
-    src/
-      main.rs
-      ipc/
-      render/
-      scene/
-      ndi/
-      media/
-      telemetry/
-  build.js
-  scripts/release.js
+```bash
+npm run release
 ```
+
+Bumps the version, commits, tags, and pushes. GitHub Actions builds and uploads platform archives to the release.
+
+## Architecture
+
+```
+src/
+  main.js           – Electron entry point
+  cli.js            – CLI argument parser
+  settings.js       – Persistent settings (electron-store)
+  outputManager.js  – Offscreen BrowserWindow lifecycle and frame capture
+  ndiSender.js      – grandi NDI sender wrapper
+  ipc.js            – TCP JSON-line protocol server
+```
+
+## Trademarks
+
+NDI® is a registered trademark of Vizrt NDI AB. This project is not affiliated with or endorsed by Vizrt NDI AB. For more information about NDI, visit [ndi.video](https://ndi.video).
+
+## License
+
+This project is part of [LyricDisplay](https://github.com/PeterAlaks/lyric-display-app). See the main repository for license details.

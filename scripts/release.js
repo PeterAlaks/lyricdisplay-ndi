@@ -1,8 +1,7 @@
 /**
- * LyricDisplay NDI Native Companion release helper.
+ * LyricDisplay NDI Companion release helper.
  *
- * Responsibilities:
- * 1. Bump version in native/Cargo.toml and package.json
+ * 1. Bump version in package.json
  * 2. Commit + tag + push
  *
  * Platform assets are built/uploaded by GitHub Actions on tag push.
@@ -17,7 +16,6 @@ import readline from 'readline';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
-const CARGO_TOML = path.join(ROOT, 'native', 'Cargo.toml');
 const PACKAGE_JSON = path.join(ROOT, 'package.json');
 
 function run(command, opts = {}) {
@@ -25,7 +23,7 @@ function run(command, opts = {}) {
     cwd: ROOT,
     encoding: 'utf8',
     stdio: 'pipe',
-    ...opts
+    ...opts,
   }).toString().trim();
 }
 
@@ -39,57 +37,32 @@ function prompt(question) {
   });
 }
 
-function parseVersionFromCargoToml(content) {
-  const match = content.match(/^version\s*=\s*"(\d+\.\d+\.\d+)"\s*$/m);
-  if (!match) {
-    throw new Error('Could not find version in native/Cargo.toml');
-  }
-  return match[1];
-}
-
-function updateCargoVersion(content, newVersion) {
-  if (!/^\d+\.\d+\.\d+$/.test(newVersion)) {
-    throw new Error(`Invalid version format: ${newVersion}`);
-  }
-  return content.replace(
-    /^version\s*=\s*"(\d+\.\d+\.\d+)"\s*$/m,
-    `version = "${newVersion}"`
-  );
-}
-
 function nextVersions(version) {
   const [major, minor, patch] = version.split('.').map(Number);
   return {
     patch: `${major}.${minor}.${patch + 1}`,
     minor: `${major}.${minor + 1}.0`,
-    major: `${major + 1}.0.0`
+    major: `${major + 1}.0.0`,
   };
 }
 
 function ensureCleanGit() {
   const status = run('git status --porcelain');
-  if (status) {
-    throw new Error('Git working directory is not clean');
-  }
+  if (status) throw new Error('Git working directory is not clean');
 }
 
 function ensureTagAvailable(tagName) {
   const local = run('git tag -l');
-  if (local.split('\n').includes(tagName)) {
-    throw new Error(`Tag already exists locally: ${tagName}`);
-  }
-
+  if (local.split('\n').includes(tagName)) throw new Error(`Tag already exists locally: ${tagName}`);
   const remote = run('git ls-remote --tags origin');
-  if (remote.includes(`refs/tags/${tagName}`)) {
-    throw new Error(`Tag already exists on origin: ${tagName}`);
-  }
+  if (remote.includes(`refs/tags/${tagName}`)) throw new Error(`Tag already exists on origin: ${tagName}`);
 }
 
 async function selectVersion(currentVersion) {
   const args = process.argv.slice(2);
   const next = nextVersions(currentVersion);
 
-  for (let i = 0; i < args.length; i += 1) {
+  for (let i = 0; i < args.length; i++) {
     if (args[i] === '--patch') return next.patch;
     if (args[i] === '--minor') return next.minor;
     if (args[i] === '--major') return next.major;
@@ -112,51 +85,32 @@ async function selectVersion(currentVersion) {
 }
 
 async function main() {
-  try {
-    ensureCleanGit();
-  } catch (error) {
+  try { ensureCleanGit(); } catch (error) {
     console.error(`Release blocked: ${error.message}`);
     process.exit(1);
   }
 
-  const cargoContent = fs.readFileSync(CARGO_TOML, 'utf8');
-  const currentVersion = parseVersionFromCargoToml(cargoContent);
+  const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON, 'utf8'));
+  const currentVersion = pkg.version;
   const targetVersion = await selectVersion(currentVersion);
 
-  if (!targetVersion) {
-    console.log('Release cancelled.');
-    process.exit(0);
-  }
-
-  if (!/^\d+\.\d+\.\d+$/.test(targetVersion)) {
-    console.error('Invalid version format. Expected x.y.z');
-    process.exit(1);
-  }
+  if (!targetVersion) { console.log('Release cancelled.'); process.exit(0); }
+  if (!/^\d+\.\d+\.\d+$/.test(targetVersion)) { console.error('Invalid version format.'); process.exit(1); }
 
   const tag = `v${targetVersion}`;
-
-  try {
-    ensureTagAvailable(tag);
-  } catch (error) {
+  try { ensureTagAvailable(tag); } catch (error) {
     console.error(`Release blocked: ${error.message}`);
     process.exit(1);
   }
 
   const confirm = await prompt(`Release ${tag}? (y/N):`);
-  if (confirm.toLowerCase() !== 'y') {
-    console.log('Release cancelled.');
-    process.exit(0);
-  }
+  if (confirm.toLowerCase() !== 'y') { console.log('Release cancelled.'); process.exit(0); }
 
-  const updatedCargo = updateCargoVersion(cargoContent, targetVersion);
-  fs.writeFileSync(CARGO_TOML, updatedCargo);
-
-  const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON, 'utf8'));
   pkg.version = targetVersion;
   fs.writeFileSync(PACKAGE_JSON, `${JSON.stringify(pkg, null, 2)}\n`);
 
   try {
-    run('git add native/Cargo.toml package.json');
+    run('git add package.json');
     run(`git commit -m "chore: release ${tag}"`, { stdio: 'inherit' });
     run(`git tag ${tag}`);
     run('git push', { stdio: 'inherit' });
@@ -167,7 +121,7 @@ async function main() {
   }
 
   console.log(`Release tag pushed: ${tag}`);
-  console.log('GitHub Actions will build and publish win/mac/linux zip assets.');
+  console.log('GitHub Actions will build and publish platform assets.');
 }
 
 main();

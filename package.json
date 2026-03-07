@@ -1,15 +1,64 @@
 {
   "name": "lyricdisplay-ndi",
-  "version": "0.1.0",
-  "description": "Native Rust NDI companion for LyricDisplay",
+  "version": "0.2.0",
+  "description": "NDI™ companion for LyricDisplay — broadcasts output pages over NDI",
   "private": true,
   "type": "module",
+  "main": "src/main.js",
   "scripts": {
-    "start": "cargo run --manifest-path native/Cargo.toml -- --host 127.0.0.1 --port 9137",
+    "start": "electron src/main.js",
     "build": "node build.js",
     "release": "node scripts/release.js"
   },
-  "dependencies": {},
-  "author": "",
-  "license": "MIT"
+  "dependencies": {
+    "electron-store": "^10.1.0",
+    "grandi": "^1.3.0"
+  },
+  "devDependencies": {
+    "electron": "^37.2.5",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.lyricdisplay.ndi",
+    "productName": "LyricDisplay NDI",
+    "files": [
+      "src/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/grandi/**",
+      "node_modules/@grandi/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "../public/favicon.ico",
+      "artifactName": "lyricdisplay-ndi-win.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "../public/favicon.icns",
+      "artifactName": "lyricdisplay-ndi-mac-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "../public/favicon.png",
+      "artifactName": "lyricdisplay-ndi-linux.${ext}"
+    }
+  }
 }
