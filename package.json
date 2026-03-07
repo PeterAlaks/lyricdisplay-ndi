@@ -1,6 +1,6 @@
 {
   "name": "lyricdisplay-ndi",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "NDI™ companion for LyricDisplay — broadcasts output pages over NDI",
   "private": true,
   "type": "module",
@@ -34,7 +34,9 @@
       "target": [
         {
           "target": "zip",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "../public/favicon.ico",
@@ -49,7 +51,9 @@
       "target": [
         {
           "target": "zip",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "../public/favicon.png",
