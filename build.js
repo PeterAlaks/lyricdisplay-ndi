@@ -35,7 +35,7 @@ function main() {
 
   // electron-builder reads the "build" key from package.json.
   // The zip target produces archives that the main app can extract.
-  const cmd = `npx electron-builder --config package.json ${extraArgs}`.trim();
+  const cmd = `npx electron-builder ${extraArgs}`.trim();
   run(cmd);
 
   console.log('');

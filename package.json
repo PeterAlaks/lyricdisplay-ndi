@@ -2,6 +2,10 @@
   "name": "lyricdisplay-ndi",
   "version": "1.0.0",
   "description": "NDI™ companion for LyricDisplay — broadcasts output pages over NDI",
+   "author": {
+    "name": "Peter Alakembi",
+    "email": "alakembipeter30@gmail.com"
+  },
   "private": true,
   "type": "module",
   "main": "src/main.js",
@@ -39,12 +43,10 @@
           ]
         }
       ],
-      "icon": "../public/favicon.ico",
       "artifactName": "lyricdisplay-ndi-win.${ext}"
     },
     "mac": {
       "target": "zip",
-      "icon": "../public/favicon.icns",
       "artifactName": "lyricdisplay-ndi-mac-${arch}.${ext}"
     },
     "linux": {
@@ -56,7 +58,6 @@
           ]
         }
       ],
-      "icon": "../public/favicon.png",
       "artifactName": "lyricdisplay-ndi-linux.${ext}"
     }
   }
