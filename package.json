@@ -1,6 +1,6 @@
 {
   "name": "lyricdisplay-ndi",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "NDI™ companion for LyricDisplay — broadcasts output pages over NDI",
   "author": {
     "name": "Peter Alakembi",
