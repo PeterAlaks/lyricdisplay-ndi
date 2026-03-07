@@ -10,6 +10,7 @@
  */
 
 import net from 'net';
+import { app } from 'electron';
 import {
   enableOutput,
   disableOutput,
@@ -84,7 +85,7 @@ function handleMessage(raw, socket) {
         seq,
         payload: {
           companion: 'lyricdisplay-ndi',
-          version: process.env.npm_package_version || '0.2.0',
+          version: app.getVersion(),
           engine: 'electron-offscreen',
         },
       });
