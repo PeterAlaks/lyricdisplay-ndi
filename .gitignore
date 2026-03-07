@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.tgz
 .env
+.commit-msg-temp.txt
+.tag-msg-temp.txt
+.release-notes-temp.txt

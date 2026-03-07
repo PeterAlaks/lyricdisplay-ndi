@@ -37,13 +37,16 @@ const WORKFLOW_FILE = 'release.yml';
 // ─── Helpers ───���────────────────────────────────────────────
 
 function safeExec(cmd, opts = {}) {
-  return execSync(cmd, {
+  const result = execSync(cmd, {
     cwd: ROOT,
     encoding: 'utf8',
     stdio: 'pipe',
     timeout: 30000,
     ...opts,
-  }).toString().trim();
+  });
+  // When stdio is 'inherit', execSync returns null (output goes to terminal).
+  if (result == null) return '';
+  return result.toString().trim();
 }
 
 function prompt(question) {
@@ -275,6 +278,12 @@ async function main() {
 
   const tag = `v${targetVersion}`;
 
+  if (targetVersion === currentVersion) {
+    console.error(`\n  ERROR: Target version (${targetVersion}) is the same as the current version.`);
+    console.error('  Choose a different version to release.\n');
+    process.exit(1);
+  }
+
   const conflict = checkTagExists(tag);
   if (conflict) {
     console.error(`\n  ERROR: Tag ${tag} already exists (${conflict}).`);
@@ -296,12 +305,27 @@ async function main() {
   console.log(`\n  Starting release ${tag}...`);
 
   try {
-    // Bump version
+    // Bump version in package.json
     pkg.version = targetVersion;
     fs.writeFileSync(PACKAGE_JSON, `${JSON.stringify(pkg, null, 2)}\n`);
 
+    // Also bump version in package-lock.json if it exists
+    const PACKAGE_LOCK = path.join(ROOT, 'package-lock.json');
+    if (fs.existsSync(PACKAGE_LOCK)) {
+      try {
+        const lock = JSON.parse(fs.readFileSync(PACKAGE_LOCK, 'utf8'));
+        lock.version = targetVersion;
+        if (lock.packages && lock.packages['']) {
+          lock.packages[''].version = targetVersion;
+        }
+        fs.writeFileSync(PACKAGE_LOCK, `${JSON.stringify(lock, null, 2)}\n`);
+      } catch (lockErr) {
+        console.warn('  Warning: Could not update package-lock.json:', lockErr.message);
+      }
+    }
+
     // Commit
-    safeExec('git add package.json');
+    safeExec('git add package.json package-lock.json');
 
     let commitMsg = `chore: release ${tag}`;
     if (notes) {
