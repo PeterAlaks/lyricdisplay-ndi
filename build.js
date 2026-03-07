@@ -35,7 +35,9 @@ function main() {
 
   // electron-builder reads the "build" key from package.json.
   // The zip target produces archives that the main app can extract.
-  const cmd = `npx electron-builder ${extraArgs}`.trim();
+  // --publish never prevents electron-builder from trying to publish
+  // (release asset upload is handled separately by the CI workflow).
+  const cmd = `npx electron-builder ${extraArgs} --publish never`.trim();
   run(cmd);
 
   console.log('');
