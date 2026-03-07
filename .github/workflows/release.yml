@@ -10,12 +10,24 @@ permissions:
 
 jobs:
   build-and-upload:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: windows-latest
+            label: Windows x64
+            build_args: "--win --x64"
+          - os: macos-13
+            label: macOS x64
+            build_args: "--mac --x64"
+          - os: macos-latest
+            label: macOS arm64
+            build_args: "--mac --arm64"
+          - os: ubuntu-latest
+            label: Linux x64
+            build_args: "--linux --x64"
 
     steps:
       - name: Checkout
@@ -30,10 +42,9 @@ jobs:
         run: npm ci
 
       - name: Build platform archive
-        run: node build.js
+        run: node build.js ${{ matrix.build_args }}
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          fail_on_missing: false

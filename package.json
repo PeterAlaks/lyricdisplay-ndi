@@ -41,12 +41,7 @@
       "artifactName": "lyricdisplay-ndi-win.${ext}"
     },
     "mac": {
-      "target": [
-        {
-          "target": "zip",
-          "arch": ["x64", "arm64"]
-        }
-      ],
+      "target": "zip",
       "icon": "../public/favicon.icns",
       "artifactName": "lyricdisplay-ndi-mac-${arch}.${ext}"
     },
