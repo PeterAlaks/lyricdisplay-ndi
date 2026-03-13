@@ -31,10 +31,6 @@ try {
 /**
  * Create an NDI sender for a given source name and resolution.
  *
- * grandi.send() is async, so the handle starts with ready=false and
- * becomes usable once the promise resolves.  Frames arriving before
- * that are silently dropped.
- *
  * @param {string} name      NDI source name visible on the network
  * @param {number} width     Frame width in pixels
  * @param {number} height    Frame height in pixels
@@ -47,7 +43,6 @@ export function createNdiSender(name, width, height, framerate) {
     return null;
   }
 
-  // Resolve the FourCC and FrameType constants from grandi.
   const FOURCC_BGRA = grandi.FOURCC_BGRA ?? grandi.FourCC?.BGRA;
   const FORMAT_PROGRESSIVE = grandi.FORMAT_TYPE_PROGRESSIVE ?? grandi.FrameType?.Progressive ?? 1;
 
@@ -69,18 +64,13 @@ export function createNdiSender(name, width, height, framerate) {
     /**
      * Submit a single BGRA frame.
      *
-     * sender.video() is async and with clockVideo=true the NDI SDK
-     * blocks until it's time to deliver the next frame.  We must
-     * serialize calls: if a previous send is still in flight we skip
-     * this frame (the invalidation timer will supply the next one).
-     *
      * @param {Buffer} bgraBuffer  Raw pixel data (width * height * 4 bytes)
      * @param {number} w           Actual frame width
      * @param {number} h           Actual frame height
      */
     sendFrame(bgraBuffer, w, h) {
       if (!handle.ready || !handle.sender) return;
-      if (handle.sending) return; // previous frame still in flight – drop
+      if (handle.sending) return;
 
       handle.sending = true;
       handle.sender.video({
@@ -97,7 +87,6 @@ export function createNdiSender(name, width, height, framerate) {
         handle.sending = false;
       }).catch((err) => {
         handle.sending = false;
-        // Log once to avoid flooding.
         console.error(`[NdiSender] video() error on "${name}":`, err.message);
       });
     },
@@ -114,9 +103,6 @@ export function createNdiSender(name, width, height, framerate) {
     },
   };
 
-  // clockVideo: true tells NDI to pace frame delivery to match the
-  // declared framerate.  This is essential for receivers (OBS, vMix)
-  // to display a stable stream.
   grandi.send({ name, clockVideo: true, clockAudio: false })
     .then((sender) => {
       handle.sender = sender;

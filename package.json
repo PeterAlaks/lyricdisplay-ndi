@@ -27,6 +27,7 @@
     "productName": "LyricDisplay NDI",
     "files": [
       "src/**/*",
+      "public/**/*",
       "package.json",
       "node_modules/**/*"
     ],
@@ -43,10 +44,12 @@
           ]
         }
       ],
+      "icon": "public/favicon.ico",
       "artifactName": "lyricdisplay-ndi-win.${ext}"
     },
     "mac": {
       "target": "zip",
+      "icon": "public/favicon.icns",
       "artifactName": "lyricdisplay-ndi-mac-${arch}.${ext}"
     },
     "linux": {
@@ -58,6 +61,7 @@
           ]
         }
       ],
+      "icon": "public/favicon.png",
       "artifactName": "lyricdisplay-ndi-linux.${ext}"
     }
   }

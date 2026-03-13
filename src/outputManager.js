@@ -94,11 +94,6 @@ export function enableOutput(outputKey, config = {}) {
   const framerate = config.framerate || 30;
   const sourceName = config.sourceName || `LyricDisplay ${outputKey}`;
 
-  // Electron BrowserWindow dimensions are in logical (CSS) pixels.
-  // On high-DPI displays the paint event delivers physical pixels
-  // (logical × scaleFactor).  To get exactly `width × height` physical
-  // pixels in the NDI output we must set the content size to
-  // width/scaleFactor × height/scaleFactor logical pixels.
   const scaleFactor = screen.getPrimaryDisplay().scaleFactor || 1;
   const logicalW = Math.round(width / scaleFactor);
   const logicalH = Math.round(height / scaleFactor);
@@ -116,15 +111,12 @@ export function enableOutput(outputKey, config = {}) {
 
   win.setContentSize(logicalW, logicalH);
 
-  // Set the offscreen frame rate to match the desired NDI framerate.
   win.webContents.setFrameRate(framerate);
 
-  // Ensure the page background is transparent so NDI receivers get
-  // an alpha channel (lyrics overlaid on transparent background).
   win.webContents.on('dom-ready', () => {
     win.webContents.insertCSS(
       'html, body, #root { background: transparent !important; }'
-    ).catch(() => {});
+    ).catch(() => { });
   });
 
   const sender = createNdiSender(sourceName, width, height, framerate);
@@ -148,13 +140,9 @@ export function enableOutput(outputKey, config = {}) {
     paintCount: 0,
   };
 
-  // The `paint` event fires every time Chromium composites a new frame.
-  // The `image` is an Electron NativeImage backed by a shared-memory
-  // bitmap – calling getBitmap() returns a Buffer of raw BGRA pixels.
   win.webContents.on('paint', (_event, _dirty, image) => {
     const now = performance.now();
 
-    // Record inter-frame time for FPS / latency stats.
     if (handle.prevPaintTs > 0) {
       const delta = now - handle.prevPaintTs;
       handle.frameTimes[handle.frameTimeIdx % FRAME_TIME_BUFFER_SIZE] = delta;
@@ -163,21 +151,13 @@ export function enableOutput(outputKey, config = {}) {
     handle.prevPaintTs = now;
     handle.paintCount++;
 
-    // Check sender readiness (grandi.send() is async).
     if (!handle.sender || !handle.sender.ready) return;
 
     const size = image.getSize();
-    // Skip empty frames (before page loads).
     if (size.width === 0 || size.height === 0) return;
 
     try {
-      // toBitmap() returns a copy of the raw BGRA pixel buffer.
-      // (getBitmap() is deprecated in recent Electron versions.)
-      const bitmap = typeof image.toBitmap === 'function'
-        ? image.toBitmap()
-        : image.getBitmap();
-      // sendFrame returns immediately; if the sender is busy with a
-      // previous frame (clockVideo pacing) it silently drops this one.
+      const bitmap = image.toBitmap();
       const wasBusy = handle.sender.sending;
       handle.sender.sendFrame(bitmap, size.width, size.height);
       if (wasBusy) {
@@ -195,9 +175,6 @@ export function enableOutput(outputKey, config = {}) {
     }
   });
 
-  // Offscreen rendering only fires `paint` when the page content changes.
-  // For mostly-static lyrics pages, we must periodically invalidate the
-  // view to force Chromium to repaint and deliver frames at the target rate.
   const invalidateIntervalMs = Math.max(Math.floor(1000 / framerate) - 2, 8);
   handle.invalidateTimer = setInterval(() => {
     try {
@@ -241,7 +218,6 @@ export function updateOutputConfig(outputKey, config) {
   const handle = outputs.get(outputKey);
   if (!handle) return;
 
-  // If resolution or framerate changed, recreate the output.
   const resolution = config.resolution || '1080p';
   const customWidth = config.customWidth || handle.width;
   const customHeight = config.customHeight || handle.height;
@@ -269,7 +245,6 @@ function computeFrameStats(handle) {
     return { avg_frame_ms: 0, p95_frame_ms: 0, render_fps: 0 };
   }
 
-  // Collect the valid samples.
   const samples = [];
   const start = handle.frameTimeIdx >= FRAME_TIME_BUFFER_SIZE
     ? handle.frameTimeIdx - FRAME_TIME_BUFFER_SIZE
@@ -278,16 +253,13 @@ function computeFrameStats(handle) {
     samples.push(handle.frameTimes[i % FRAME_TIME_BUFFER_SIZE]);
   }
 
-  // Average
   const sum = samples.reduce((a, b) => a + b, 0);
   const avg = sum / samples.length;
 
-  // P95
   const sorted = [...samples].sort((a, b) => a - b);
   const p95Idx = Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1);
   const p95 = sorted[p95Idx];
 
-  // FPS from average inter-frame time
   const fps = avg > 0 ? 1000 / avg : 0;
 
   return {
@@ -321,7 +293,6 @@ export function getOutputStats() {
     totalNdiSendFailures += handle.ndiSendFailures;
     totalPaintCount += handle.paintCount;
 
-    // Weight averages by paint count for aggregation.
     weightedAvgFrameMs += frameStats.avg_frame_ms * handle.paintCount;
     weightedRenderFps += frameStats.render_fps * handle.paintCount;
     if (frameStats.p95_frame_ms > maxP95FrameMs) {
@@ -346,19 +317,15 @@ export function getOutputStats() {
   const avgFrameMs = totalPaintCount > 0 ? weightedAvgFrameMs / totalPaintCount : 0;
   const renderFps = totalPaintCount > 0 ? weightedRenderFps / totalPaintCount : 0;
 
-  // send_fps: approximate from total frames sent and uptime
-  // For simplicity, use the render_fps as a proxy (frames are sent on each paint).
   const sendFps = renderFps;
 
   return {
-    // Aggregated stats expected by the telemetry grid
     render_fps: renderFps,
     send_fps: sendFps,
     dropped_frames: totalFramesDropped,
     ndi_send_failures: totalNdiSendFailures,
     avg_frame_ms: avgFrameMs,
     p95_frame_ms: maxP95FrameMs,
-    // Per-output breakdown
     outputs: perOutput,
   };
 }

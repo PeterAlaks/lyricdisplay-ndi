@@ -23,7 +23,6 @@ function run(command) {
 }
 
 function main() {
-  // Forward any CLI arguments (e.g. --win --x64) to electron-builder.
   const extraArgs = process.argv.slice(2).join(' ');
 
   console.log('LyricDisplay NDI Companion — Build');
@@ -33,10 +32,6 @@ function main() {
   }
   console.log('');
 
-  // electron-builder reads the "build" key from package.json.
-  // The zip target produces archives that the main app can extract.
-  // --publish never prevents electron-builder from trying to publish
-  // (release asset upload is handled separately by the CI workflow).
   const cmd = `npx electron-builder ${extraArgs} --publish never`.trim();
   run(cmd);
 
