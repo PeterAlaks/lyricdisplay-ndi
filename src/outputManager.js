@@ -68,7 +68,7 @@ export function destroyOutputManager() {
  * Build the full URL for an output page.
  */
 function buildOutputUrl(outputKey) {
-  const p = OUTPUT_PATHS[outputKey];
+  const p = OUTPUT_PATHS[outputKey] || (/^output\d+$/i.test(String(outputKey)) ? outputKey : null);
   if (!p) return null;
   if (useHashRouting) {
     return `${baseAppUrl}/#/${p}`;
