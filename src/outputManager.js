@@ -130,6 +130,7 @@ export function enableOutput(outputKey, config = {}) {
     width,
     height,
     invalidateTimer: null,
+    closing: false,
     framesSent: 0,
     framesDropped: 0,
     ndiSendFailures: 0,
@@ -194,6 +195,9 @@ export function disableOutput(outputKey) {
   const handle = outputs.get(outputKey);
   if (!handle) return;
 
+  if (handle.closing) return;
+  handle.closing = true;
+
   console.log(`[OutputManager] Disabling ${outputKey}`);
 
   if (handle.invalidateTimer) {
@@ -203,15 +207,19 @@ export function disableOutput(outputKey) {
 
   try {
     handle.win.webContents.removeAllListeners('paint');
-    handle.win.destroy();
   } catch { /* already destroyed */ }
 
-  if (handle.sender) {
-    destroyNdiSender(handle.sender);
-    handle.sender = null;
-  }
-
   outputs.delete(outputKey);
+
+  const teardown = destroyNdiSender(handle.sender, { timeoutMs: 1500, label: outputKey });
+  Promise.resolve(teardown).finally(() => {
+    try {
+      if (!handle.win.isDestroyed()) {
+        handle.win.destroy();
+      }
+    } catch { /* already destroyed */ }
+    handle.sender = null;
+  });
 }
 
 export function updateOutputConfig(outputKey, config) {

@@ -60,6 +60,10 @@ export function createNdiSender(name, width, height, framerate) {
     framerate,
     ready: false,
     sending: false,
+    inflight: 0,
+    closing: false,
+    closed: false,
+    destroyPromise: null,
 
     /**
      * Submit a single BGRA frame.
@@ -69,11 +73,13 @@ export function createNdiSender(name, width, height, framerate) {
      * @param {number} h           Actual frame height
      */
     sendFrame(bgraBuffer, w, h) {
-      if (!handle.ready || !handle.sender) return;
+      if (!handle.ready || !handle.sender || handle.closing) return;
       if (handle.sending) return;
 
       handle.sending = true;
-      handle.sender.video({
+      handle.inflight += 1;
+
+      const sendPromise = handle.sender.video({
         xres: w,
         yres: h,
         frameRateN: framerate,
@@ -83,15 +89,20 @@ export function createNdiSender(name, width, height, framerate) {
         frameFormatType: FORMAT_PROGRESSIVE,
         lineStrideBytes: w * 4,
         data: bgraBuffer,
-      }).then(() => {
-        handle.sending = false;
-      }).catch((err) => {
-        handle.sending = false;
-        console.error(`[NdiSender] video() error on "${name}":`, err.message);
       });
+
+      Promise.resolve(sendPromise)
+        .catch((err) => {
+          console.error(`[NdiSender] video() error on "${name}":`, err.message);
+        })
+        .finally(() => {
+          handle.sending = false;
+          handle.inflight = Math.max(0, handle.inflight - 1);
+        });
     },
 
     destroy() {
+      if (handle.closed) return;
       if (handle.sender) {
         try {
           console.log(`[NdiSender] Destroying sender "${name}"`);
@@ -100,6 +111,38 @@ export function createNdiSender(name, width, height, framerate) {
         handle.sender = null;
         handle.ready = false;
       }
+      handle.closed = true;
+    },
+
+    destroyGracefully({ timeoutMs = 1500, label = name } = {}) {
+      if (handle.closed) return Promise.resolve({ forced: false });
+      if (handle.destroyPromise) return handle.destroyPromise;
+
+      handle.closing = true;
+      handle.destroyPromise = new Promise((resolve) => {
+        const start = Date.now();
+
+        const check = () => {
+          if (!handle.sender || handle.inflight === 0) {
+            handle.destroy();
+            resolve({ forced: false });
+            return;
+          }
+
+          if (Date.now() - start >= timeoutMs) {
+            console.warn(`[NdiSender] Graceful destroy timeout for "${label}" after ${timeoutMs}ms`);
+            handle.destroy();
+            resolve({ forced: true });
+            return;
+          }
+
+          setTimeout(check, 20);
+        };
+
+        setTimeout(check, 0);
+      });
+
+      return handle.destroyPromise;
     },
   };
 
@@ -121,7 +164,11 @@ export function createNdiSender(name, width, height, framerate) {
  * Destroy an NDI sender handle.
  * @param {NdiSenderHandle|null} handle
  */
-export function destroyNdiSender(handle) {
+export function destroyNdiSender(handle, options = {}) {
   if (!handle) return;
+  if (typeof handle.destroyGracefully === 'function') {
+    return handle.destroyGracefully(options);
+  }
   handle.destroy();
+  return Promise.resolve({ forced: false });
 }
