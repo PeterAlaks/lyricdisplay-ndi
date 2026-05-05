@@ -69,4 +69,4 @@ NDI® is a registered trademark of Vizrt NDI AB. This project is not affiliated 
 
 ## License
 
-This project is part of [LyricDisplay](https://github.com/PeterAlaks/lyric-display-app). See the main repository for license details.
+This project is part of [LyricDisplay](https://github.com/PeterAlaks/lyric-display-app) and is licensed under the GNU General Public License, version 3 or later. See the main repository for full license details.
