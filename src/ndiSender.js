@@ -6,11 +6,13 @@
  */
 
 let grandi = null;
+let loadError = null;
 
 try {
   const mod = await import('grandi');
   grandi = mod.default || mod;
 } catch (err) {
+  loadError = err;
   console.error('[NdiSender] Failed to load grandi:', err.message);
   console.error('[NdiSender] NDI output will be unavailable.');
 }
@@ -37,7 +39,7 @@ try {
  * @param {number} framerate Target framerate (used for NDI timing metadata)
  * @returns {NdiSenderHandle|null}
  */
-export function createNdiSender(name, width, height, framerate) {
+export function createNdiSender(name, width, height, framerate, callbacks = {}) {
   if (!grandi) {
     console.warn(`[NdiSender] grandi not available – "${name}" will not broadcast.`);
     return null;
@@ -73,8 +75,8 @@ export function createNdiSender(name, width, height, framerate) {
      * @param {number} h           Actual frame height
      */
     sendFrame(bgraBuffer, w, h) {
-      if (!handle.ready || !handle.sender || handle.closing) return;
-      if (handle.sending) return;
+      if (!handle.ready || !handle.sender || handle.closing) return false;
+      if (handle.sending) return false;
 
       handle.sending = true;
       handle.inflight += 1;
@@ -94,11 +96,15 @@ export function createNdiSender(name, width, height, framerate) {
       Promise.resolve(sendPromise)
         .catch((err) => {
           console.error(`[NdiSender] video() error on "${name}":`, err.message);
+          callbacks.onSendFailure?.(err);
         })
         .finally(() => {
           handle.sending = false;
           handle.inflight = Math.max(0, handle.inflight - 1);
+          callbacks.onSendComplete?.();
         });
+
+      return true;
     },
 
     destroy() {
@@ -158,6 +164,14 @@ export function createNdiSender(name, width, height, framerate) {
     });
 
   return handle;
+}
+
+export function getNdiBackendState() {
+  return {
+    available: Boolean(grandi),
+    backend: grandi ? 'grandi' : 'unavailable',
+    error: loadError?.message || null,
+  };
 }
 
 /**

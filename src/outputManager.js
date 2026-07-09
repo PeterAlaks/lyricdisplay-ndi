@@ -7,7 +7,7 @@
  */
 
 import { BrowserWindow, screen } from 'electron';
-import { createNdiSender, destroyNdiSender } from './ndiSender.js';
+import { createNdiSender, destroyNdiSender, getNdiBackendState } from './ndiSender.js';
 
 const RESOLUTION_MAP = {
   '720p': { width: 1280, height: 720 },
@@ -23,6 +23,7 @@ const OUTPUT_PATHS = {
 
 /** @type {Map<string, OutputHandle>} */
 const outputs = new Map();
+const outputOperations = new Map();
 let baseAppUrl = 'http://127.0.0.1:4000';
 let useHashRouting = true;
 
@@ -59,9 +60,7 @@ export function initOutputManager(appUrl, opts = {}) {
 }
 
 export function destroyOutputManager() {
-  for (const key of [...outputs.keys()]) {
-    disableOutput(key);
-  }
+  return Promise.all([...outputs.keys()].map((key) => disableOutput(key)));
 }
 
 /**
@@ -76,15 +75,32 @@ function buildOutputUrl(outputKey) {
   return `${baseAppUrl}/${p}`;
 }
 
+function queueOutputOperation(outputKey, operation) {
+  const key = String(outputKey || '');
+  const previous = outputOperations.get(key) || Promise.resolve();
+  const next = previous.catch(() => null).then(operation);
+  const tracked = next.finally(() => {
+    if (outputOperations.get(key) === tracked) {
+      outputOperations.delete(key);
+    }
+  });
+  outputOperations.set(key, tracked);
+  return next;
+}
+
 export function enableOutput(outputKey, config = {}) {
+  return queueOutputOperation(outputKey, () => enableOutputNow(outputKey, config));
+}
+
+async function enableOutputNow(outputKey, config = {}) {
   if (outputs.has(outputKey)) {
-    disableOutput(outputKey);
+    await disableOutputNow(outputKey);
   }
 
   const url = buildOutputUrl(outputKey);
   if (!url) {
     console.warn(`[OutputManager] Unknown output key: ${outputKey}`);
-    return;
+    return false;
   }
 
   const resolution = config.resolution || '1080p';
@@ -93,6 +109,12 @@ export function enableOutput(outputKey, config = {}) {
   const { width, height } = RESOLUTION_MAP[resolution] || { width: customWidth, height: customHeight };
   const framerate = config.framerate || 30;
   const sourceName = config.sourceName || `LyricDisplay ${outputKey}`;
+  const backendState = getNdiBackendState();
+
+  if (!backendState.available) {
+    console.warn(`[OutputManager] Cannot enable ${outputKey}: NDI backend unavailable${backendState.error ? ` (${backendState.error})` : ''}`);
+    return false;
+  }
 
   const scaleFactor = screen.getPrimaryDisplay().scaleFactor || 1;
   const logicalW = Math.round(width / scaleFactor);
@@ -119,12 +141,10 @@ export function enableOutput(outputKey, config = {}) {
     ).catch(() => { });
   });
 
-  const sender = createNdiSender(sourceName, width, height, framerate);
-
   /** @type {OutputHandle} */
   const handle = {
     win,
-    sender,
+    sender: null,
     framerate,
     sourceName,
     width,
@@ -139,7 +159,30 @@ export function enableOutput(outputKey, config = {}) {
     frameTimeIdx: 0,
     prevPaintTs: 0,
     paintCount: 0,
+    sendTimes: new Array(FRAME_TIME_BUFFER_SIZE).fill(0),
+    sendTimeIdx: 0,
+    prevSendTs: 0,
+    sendCount: 0,
   };
+
+  handle.sender = createNdiSender(sourceName, width, height, framerate, {
+    onSendFailure: (err) => {
+      handle.ndiSendFailures++;
+      if (handle.ndiSendFailures <= 3) {
+        console.error(`[OutputManager] NDI async send error (${outputKey}):`, err.message);
+      }
+    },
+    onSendComplete: () => {
+      const now = performance.now();
+      if (handle.prevSendTs > 0) {
+        const delta = now - handle.prevSendTs;
+        handle.sendTimes[handle.sendTimeIdx % FRAME_TIME_BUFFER_SIZE] = delta;
+        handle.sendTimeIdx++;
+      }
+      handle.prevSendTs = now;
+      handle.sendCount++;
+    },
+  });
 
   win.webContents.on('paint', (_event, _dirty, image) => {
     const now = performance.now();
@@ -158,14 +201,12 @@ export function enableOutput(outputKey, config = {}) {
     if (size.width === 0 || size.height === 0) return;
 
     try {
-      const bitmap = image.toBitmap();
-      const wasBusy = handle.sender.sending;
-      handle.sender.sendFrame(bitmap, size.width, size.height);
-      if (wasBusy) {
-        handle.framesDropped++;
-      } else {
+      const accepted = handle.sender.sendFrame(image.toBitmap(), size.width, size.height);
+      if (accepted) {
         handle.framesSent++;
         handle.lastPaintTs = Date.now();
+      } else {
+        handle.framesDropped++;
       }
     } catch (err) {
       handle.ndiSendFailures++;
@@ -189,13 +230,18 @@ export function enableOutput(outputKey, config = {}) {
   win.loadURL(url);
 
   outputs.set(outputKey, handle);
+  return true;
 }
 
 export function disableOutput(outputKey) {
-  const handle = outputs.get(outputKey);
-  if (!handle) return;
+  return queueOutputOperation(outputKey, () => disableOutputNow(outputKey));
+}
 
-  if (handle.closing) return;
+async function disableOutputNow(outputKey) {
+  const handle = outputs.get(outputKey);
+  if (!handle) return false;
+
+  if (handle.closing) return false;
   handle.closing = true;
 
   console.log(`[OutputManager] Disabling ${outputKey}`);
@@ -212,7 +258,7 @@ export function disableOutput(outputKey) {
   outputs.delete(outputKey);
 
   const teardown = destroyNdiSender(handle.sender, { timeoutMs: 1500, label: outputKey });
-  Promise.resolve(teardown).finally(() => {
+  await Promise.resolve(teardown).finally(() => {
     try {
       if (!handle.win.isDestroyed()) {
         handle.win.destroy();
@@ -220,11 +266,16 @@ export function disableOutput(outputKey) {
     } catch { /* already destroyed */ }
     handle.sender = null;
   });
+  return true;
 }
 
 export function updateOutputConfig(outputKey, config) {
+  return queueOutputOperation(outputKey, () => updateOutputConfigNow(outputKey, config));
+}
+
+async function updateOutputConfigNow(outputKey, config) {
   const handle = outputs.get(outputKey);
-  if (!handle) return;
+  if (!handle) return false;
 
   const resolution = config.resolution || '1080p';
   const customWidth = config.customWidth || handle.width;
@@ -240,8 +291,9 @@ export function updateOutputConfig(outputKey, config) {
     sourceName !== handle.sourceName;
 
   if (needsRecreate) {
-    enableOutput(outputKey, { resolution, customWidth, customHeight, framerate, sourceName });
+    await enableOutputNow(outputKey, { resolution, customWidth, customHeight, framerate, sourceName });
   }
+  return true;
 }
 
 /**
@@ -277,6 +329,24 @@ function computeFrameStats(handle) {
   };
 }
 
+function computeSendStats(handle) {
+  const count = Math.min(handle.sendTimeIdx, FRAME_TIME_BUFFER_SIZE);
+  if (count === 0) {
+    return { send_fps: 0 };
+  }
+
+  const samples = [];
+  const start = handle.sendTimeIdx >= FRAME_TIME_BUFFER_SIZE
+    ? handle.sendTimeIdx - FRAME_TIME_BUFFER_SIZE
+    : 0;
+  for (let i = start; i < handle.sendTimeIdx; i++) {
+    samples.push(handle.sendTimes[i % FRAME_TIME_BUFFER_SIZE]);
+  }
+
+  const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+  return { send_fps: avg > 0 ? 1000 / avg : 0 };
+}
+
 /**
  * Get aggregated stats across all active outputs.
  * Returns the format expected by the main app's telemetry grid:
@@ -289,22 +359,37 @@ export function getOutputStats() {
   let weightedAvgFrameMs = 0;
   let maxP95FrameMs = 0;
   let weightedRenderFps = 0;
+  let weightedSendFps = 0;
   let totalPaintCount = 0;
+  let totalSendCount = 0;
 
   const perOutput = {};
+  const backendState = getNdiBackendState();
+  const warningFlags = [];
+
+  if (!backendState.available) {
+    warningFlags.push('ndi_backend_unavailable');
+  }
 
   for (const [key, handle] of outputs) {
     const frameStats = computeFrameStats(handle);
+    const sendStats = computeSendStats(handle);
 
     totalFramesSent += handle.framesSent;
     totalFramesDropped += handle.framesDropped;
     totalNdiSendFailures += handle.ndiSendFailures;
     totalPaintCount += handle.paintCount;
+    totalSendCount += handle.sendCount;
 
     weightedAvgFrameMs += frameStats.avg_frame_ms * handle.paintCount;
     weightedRenderFps += frameStats.render_fps * handle.paintCount;
+    weightedSendFps += sendStats.send_fps * handle.sendCount;
     if (frameStats.p95_frame_ms > maxP95FrameMs) {
       maxP95FrameMs = frameStats.p95_frame_ms;
+    }
+
+    if (!handle.sender?.ready) {
+      warningFlags.push(`${key}:sender_not_ready`);
     }
 
     perOutput[key] = {
@@ -319,13 +404,14 @@ export function getOutputStats() {
       lastPaintTs: handle.lastPaintTs,
       senderReady: handle.sender?.ready || false,
       ...frameStats,
+      ...sendStats,
     };
   }
 
   const avgFrameMs = totalPaintCount > 0 ? weightedAvgFrameMs / totalPaintCount : 0;
   const renderFps = totalPaintCount > 0 ? weightedRenderFps / totalPaintCount : 0;
 
-  const sendFps = renderFps;
+  const sendFps = totalSendCount > 0 ? weightedSendFps / totalSendCount : 0;
 
   return {
     render_fps: renderFps,
@@ -335,6 +421,11 @@ export function getOutputStats() {
     avg_frame_ms: avgFrameMs,
     p95_frame_ms: maxP95FrameMs,
     outputs: perOutput,
+    health: {
+      ndi_backend: backendState.backend,
+      warning_flags: warningFlags,
+      backend_error: backendState.error,
+    },
   };
 }
 

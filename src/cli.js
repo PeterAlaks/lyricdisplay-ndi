@@ -12,6 +12,7 @@ export function parseArgs(argv) {
     port: DEFAULT_PORT,
     appUrl: DEFAULT_APP_URL,
     hashRouting: true,
+    authToken: '',
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -20,6 +21,8 @@ export function parseArgs(argv) {
     } else if (argv[i] === '--port' && argv[i + 1]) {
       const p = Number(argv[++i]);
       if (Number.isFinite(p) && p >= 1024 && p <= 65535) args.port = p;
+    } else if (argv[i] === '--auth-token' && argv[i + 1]) {
+      args.authToken = argv[++i];
     } else if (argv[i] === '--app-url' && argv[i + 1]) {
       args.appUrl = argv[++i];
     } else if (argv[i] === '--no-hash') {

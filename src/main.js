@@ -35,7 +35,7 @@ app.whenReady().then(async () => {
 
   initSettings();
   initOutputManager(args.appUrl, { hashRouting: args.hashRouting });
-  startIpcServer(args.host, args.port);
+  startIpcServer(args.host, args.port, { authToken: args.authToken });
 });
 
 const shutdown = () => {

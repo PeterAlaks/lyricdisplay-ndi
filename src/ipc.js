@@ -21,8 +21,10 @@ import {
 } from './outputManager.js';
 
 let server = null;
+let requiredAuthToken = '';
 
-export function startIpcServer(host, port) {
+export function startIpcServer(host, port, options = {}) {
+  requiredAuthToken = String(options.authToken || '');
   server = net.createServer((socket) => {
     let buffer = '';
 
@@ -35,7 +37,15 @@ export function startIpcServer(host, port) {
         buffer = buffer.slice(idx + 1);
 
         if (line) {
-          handleMessage(line, socket);
+          handleMessage(line, socket).catch((error) => {
+            let seq = null;
+            try { seq = JSON.parse(line)?.seq ?? null; } catch { /* ignore */ }
+            reply(socket, {
+              type: 'error',
+              seq,
+              payload: { message: error?.message || 'Command failed' },
+            });
+          });
         }
 
         idx = buffer.indexOf('\n');
@@ -59,6 +69,7 @@ export function stopIpcServer() {
     try { server.close(); } catch { /* ignore */ }
     server = null;
   }
+  requiredAuthToken = '';
 }
 
 function reply(socket, obj) {
@@ -67,7 +78,7 @@ function reply(socket, obj) {
   } catch { /* socket may be gone */ }
 }
 
-function handleMessage(raw, socket) {
+async function handleMessage(raw, socket) {
   let msg;
   try {
     msg = JSON.parse(raw);
@@ -77,6 +88,15 @@ function handleMessage(raw, socket) {
   }
 
   const { type, payload, seq, output } = msg;
+
+  if (requiredAuthToken && msg.token !== requiredAuthToken) {
+    reply(socket, {
+      type: 'error',
+      seq,
+      payload: { message: 'unauthorized' },
+    });
+    return;
+  }
 
   switch (type) {
     case 'hello': {
@@ -95,38 +115,49 @@ function handleMessage(raw, socket) {
     case 'set_outputs': {
       // payload.outputs = { output1: {...}, output2: {...}, stage: {...} }
       const outputs = payload?.outputs || {};
+      const failedOutputs = [];
       for (const [key, config] of Object.entries(outputs)) {
         if (config?.enabled) {
           if (isOutputEnabled(key)) {
-            updateOutputConfig(key, config);
+            const updated = await updateOutputConfig(key, config);
+            if (!updated) failedOutputs.push(key);
           } else {
-            enableOutput(key, config);
+            const enabled = await enableOutput(key, config);
+            if (!enabled) failedOutputs.push(key);
           }
         } else {
-          disableOutput(key);
+          await disableOutput(key);
         }
       }
-      reply(socket, { type: 'ack', seq, payload: { ok: true } });
+      if (failedOutputs.length > 0) {
+        reply(socket, { type: 'error', seq, payload: { message: `failed to enable outputs: ${failedOutputs.join(', ')}` } });
+      } else {
+        reply(socket, { type: 'ack', seq, payload: { ok: true } });
+      }
       break;
     }
 
     case 'enable_output': {
       const key = output || payload?.outputKey;
-      enableOutput(key, payload);
-      reply(socket, { type: 'ack', seq, payload: { ok: true } });
+      const enabled = await enableOutput(key, payload);
+      if (enabled) {
+        reply(socket, { type: 'ack', seq, payload: { ok: true } });
+      } else {
+        reply(socket, { type: 'error', seq, payload: { message: `failed to enable output: ${key}` } });
+      }
       break;
     }
 
     case 'disable_output': {
       const key = output || payload?.outputKey;
-      disableOutput(key);
+      await disableOutput(key);
       reply(socket, { type: 'ack', seq, payload: { ok: true } });
       break;
     }
 
     case 'update_output': {
       const key = output || payload?.outputKey;
-      updateOutputConfig(key, payload);
+      await updateOutputConfig(key, payload);
       reply(socket, { type: 'ack', seq, payload: { ok: true } });
       break;
     }
@@ -141,8 +172,7 @@ function handleMessage(raw, socket) {
       reply(socket, { type: 'ack', seq, payload: { ok: true } });
       console.log('[IPC] Shutdown requested by main app');
       setTimeout(() => {
-        destroyOutputManager();
-        process.exit(0);
+        Promise.resolve(destroyOutputManager()).finally(() => process.exit(0));
       }, 200);
       break;
     }
