@@ -38,11 +38,13 @@ app.whenReady().then(async () => {
   startIpcServer(args.host, args.port, { authToken: args.authToken });
 });
 
+let shutdownPromise = null;
 const shutdown = () => {
+  if (shutdownPromise) return shutdownPromise;
   console.log('[Companion] Shutting down…');
   stopIpcServer();
-  destroyOutputManager();
-  app.quit();
+  shutdownPromise = Promise.resolve(destroyOutputManager()).finally(() => app.quit());
+  return shutdownPromise;
 };
 
 process.on('SIGINT', shutdown);

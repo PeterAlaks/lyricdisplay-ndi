@@ -159,11 +159,24 @@ async function enableOutputNow(outputKey, config = {}) {
     frameTimeIdx: 0,
     prevPaintTs: 0,
     paintCount: 0,
+    pageLoaded: false,
+    loadError: null,
     sendTimes: new Array(FRAME_TIME_BUFFER_SIZE).fill(0),
     sendTimeIdx: 0,
     prevSendTs: 0,
     sendCount: 0,
   };
+
+  win.webContents.on('did-finish-load', () => {
+    handle.pageLoaded = true;
+    handle.loadError = null;
+  });
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    handle.pageLoaded = false;
+    handle.loadError = `${errorCode}: ${errorDescription}`;
+    console.error(`[OutputManager] Failed to load ${outputKey} page (${validatedURL}): ${handle.loadError}`);
+  });
 
   handle.sender = createNdiSender(sourceName, width, height, framerate, {
     onSendFailure: (err) => {
@@ -227,7 +240,10 @@ async function enableOutputNow(outputKey, config = {}) {
   }, invalidateIntervalMs);
 
   console.log(`[OutputManager] Enabling ${outputKey}: ${url} @ ${width}x${height} ${framerate}fps → "${sourceName}"`);
-  win.loadURL(url);
+  win.loadURL(url).catch((error) => {
+    handle.pageLoaded = false;
+    handle.loadError = error.message;
+  });
 
   outputs.set(outputKey, handle);
   return true;
@@ -391,6 +407,12 @@ export function getOutputStats() {
     if (!handle.sender?.ready) {
       warningFlags.push(`${key}:sender_not_ready`);
     }
+    if (!handle.pageLoaded) {
+      warningFlags.push(`${key}:page_not_loaded`);
+    }
+    if (handle.lastPaintTs > 0 && Date.now() - handle.lastPaintTs > 5000) {
+      warningFlags.push(`${key}:frames_stale`);
+    }
 
     perOutput[key] = {
       enabled: true,
@@ -403,6 +425,8 @@ export function getOutputStats() {
       ndiSendFailures: handle.ndiSendFailures,
       lastPaintTs: handle.lastPaintTs,
       senderReady: handle.sender?.ready || false,
+      pageLoaded: handle.pageLoaded,
+      loadError: handle.loadError,
       ...frameStats,
       ...sendStats,
     };

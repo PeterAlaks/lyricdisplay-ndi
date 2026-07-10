@@ -12,6 +12,12 @@
 import net from 'net';
 import { app } from 'electron';
 import {
+  IPC_PROTOCOL_VERSION,
+  MAX_IPC_MESSAGE_BYTES,
+  authTokensMatch,
+  isValidIpcMessage,
+} from './ipcProtocol.js';
+import {
   enableOutput,
   disableOutput,
   updateOutputConfig,
@@ -22,14 +28,24 @@ import {
 
 let server = null;
 let requiredAuthToken = '';
+const clients = new Set();
 
 export function startIpcServer(host, port, options = {}) {
+  if (server) throw new Error('IPC server is already running');
   requiredAuthToken = String(options.authToken || '');
   server = net.createServer((socket) => {
     let buffer = '';
+    clients.add(socket);
+    socket.setNoDelay(true);
+    socket.setTimeout(60_000, () => socket.destroy());
 
     socket.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
+      if (Buffer.byteLength(buffer, 'utf8') > MAX_IPC_MESSAGE_BYTES) {
+        reply(socket, { type: 'error', payload: { message: 'message too large' } });
+        socket.end();
+        return;
+      }
 
       let idx = buffer.indexOf('\n');
       while (idx >= 0) {
@@ -53,6 +69,7 @@ export function startIpcServer(host, port, options = {}) {
     });
 
     socket.on('error', () => { /* client disconnected */ });
+    socket.on('close', () => clients.delete(socket));
   });
 
   server.listen(port, host, () => {
@@ -65,6 +82,10 @@ export function startIpcServer(host, port, options = {}) {
 }
 
 export function stopIpcServer() {
+  for (const socket of clients) {
+    try { socket.destroy(); } catch { /* ignore */ }
+  }
+  clients.clear();
   if (server) {
     try { server.close(); } catch { /* ignore */ }
     server = null;
@@ -87,14 +108,20 @@ async function handleMessage(raw, socket) {
     return;
   }
 
+  if (!isValidIpcMessage(msg)) {
+    reply(socket, { type: 'error', payload: { message: 'invalid message' } });
+    return;
+  }
+
   const { type, payload, seq, output } = msg;
 
-  if (requiredAuthToken && msg.token !== requiredAuthToken) {
+  if (!authTokensMatch(msg.token, requiredAuthToken)) {
     reply(socket, {
       type: 'error',
       seq,
       payload: { message: 'unauthorized' },
     });
+    socket.end();
     return;
   }
 
@@ -106,7 +133,9 @@ async function handleMessage(raw, socket) {
         payload: {
           companion: 'lyricdisplay-ndi',
           version: app.getVersion(),
+          protocolVersion: IPC_PROTOCOL_VERSION,
           engine: 'electron-offscreen',
+          capabilities: ['custom-outputs', 'per-output-stats', 'sha256-artifacts'],
         },
       });
       break;
@@ -172,7 +201,8 @@ async function handleMessage(raw, socket) {
       reply(socket, { type: 'ack', seq, payload: { ok: true } });
       console.log('[IPC] Shutdown requested by main app');
       setTimeout(() => {
-        Promise.resolve(destroyOutputManager()).finally(() => process.exit(0));
+        stopIpcServer();
+        Promise.resolve(destroyOutputManager()).finally(() => app.quit());
       }, 200);
       break;
     }
