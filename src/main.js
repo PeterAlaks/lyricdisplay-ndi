@@ -12,10 +12,16 @@
  */
 
 import { app } from 'electron';
+import fs from 'fs';
 import { parseArgs } from './cli.js';
 import { startIpcServer, stopIpcServer } from './ipc.js';
 import { initOutputManager, destroyOutputManager } from './outputManager.js';
 import { initSettings } from './settings.js';
+import {
+  configureCompanionUserData,
+  getDefaultCompanionUserDataDir,
+  resolveCompanionUserDataDir,
+} from './userData.js';
 
 // Offscreen rendering requires disabling hardware acceleration.
 app.disableHardwareAcceleration();
@@ -24,19 +30,39 @@ app.disableHardwareAcceleration();
 app.on('window-all-closed', (e) => e.preventDefault?.());
 
 const args = parseArgs(process.argv);
+const requestedUserDataDir = resolveCompanionUserDataDir(
+  args.userDataDir,
+  process.env,
+  getDefaultCompanionUserDataDir(app.getPath('appData'))
+);
+let userDataConfigurationError = null;
 
-app.whenReady().then(async () => {
+try {
+  configureCompanionUserData({ app, fs, userDataDir: requestedUserDataDir });
+} catch (error) {
+  userDataConfigurationError = error;
+  console.error('[Companion] Could not configure the managed user-data directory:', error.message);
+}
+
+const startCompanion = async () => {
   console.log('=============================================');
   console.log('  LyricDisplay NDI Companion v' + app.getVersion());
   console.log('=============================================');
   console.log(`  IPC : tcp://${args.host}:${args.port}`);
   console.log(`  App : ${args.appUrl}`);
+  if (requestedUserDataDir) console.log(`  Data: ${requestedUserDataDir}`);
   console.log('');
 
   initSettings();
   initOutputManager(args.appUrl, { hashRouting: args.hashRouting });
   startIpcServer(args.host, args.port, { authToken: args.authToken });
-});
+};
+
+if (userDataConfigurationError) {
+  app.whenReady().then(() => app.exit(1));
+} else {
+  app.whenReady().then(startCompanion);
+}
 
 let shutdownPromise = null;
 const shutdown = () => {

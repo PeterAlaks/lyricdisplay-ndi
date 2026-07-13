@@ -13,6 +13,7 @@ export function parseArgs(argv) {
     appUrl: DEFAULT_APP_URL,
     hashRouting: true,
     authToken: '',
+    userDataDir: '',
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -27,6 +28,10 @@ export function parseArgs(argv) {
       args.appUrl = argv[++i];
     } else if (argv[i] === '--no-hash') {
       args.hashRouting = false;
+    } else if (argv[i] === '--user-data-dir' && argv[i + 1]) {
+      args.userDataDir = argv[++i];
+    } else if (argv[i].startsWith('--user-data-dir=')) {
+      args.userDataDir = argv[i].slice('--user-data-dir='.length);
     }
   }
 

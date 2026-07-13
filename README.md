@@ -33,6 +33,7 @@ npx electron . --host 127.0.0.1 --port 9137 --app-url http://localhost:5173 --no
 | `--host <ip>` | `127.0.0.1` | IPC server bind address |
 | `--port <port>` | `9137` | IPC server port |
 | `--app-url <url>` | `http://127.0.0.1:4000` | Base URL of the LyricDisplay backend |
+| `--user-data-dir <path>` | `<appData>/LyricDisplay/NDI/User Data` | Managed Electron and Chromium state directory |
 | `--no-hash` | _(hash routing)_ | Use path-based routing (for dev with Vite) |
 
 ## Building
