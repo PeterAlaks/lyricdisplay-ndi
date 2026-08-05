@@ -5,8 +5,6 @@
  * Frames are submitted as raw BGRA buffers from the offscreen paint event.
  */
 
-import { createLatestFramePump } from './latestFramePump.js';
-
 let grandi = null;
 let loadError = null;
 
@@ -55,8 +53,6 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
     return null;
   }
 
-  let framePump = null;
-
   /** @type {NdiSenderHandle} */
   const handle = {
     sender: null,
@@ -79,8 +75,13 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
      * @param {number} h           Actual frame height
      */
     sendFrame(bgraBuffer, w, h) {
-      if (handle.closing || handle.closed) return false;
-      return framePump.push({
+      if (!handle.ready || !handle.sender || handle.closing) return false;
+      if (handle.sending) return false;
+
+      handle.sending = true;
+      handle.inflight += 1;
+
+      const sendPromise = handle.sender.video({
         xres: w,
         yres: h,
         frameRateN: framerate,
@@ -91,11 +92,23 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
         lineStrideBytes: w * 4,
         data: bgraBuffer,
       });
+
+      Promise.resolve(sendPromise)
+        .catch((err) => {
+          console.error(`[NdiSender] video() error on "${name}":`, err.message);
+          callbacks.onSendFailure?.(err);
+        })
+        .finally(() => {
+          handle.sending = false;
+          handle.inflight = Math.max(0, handle.inflight - 1);
+          callbacks.onSendComplete?.();
+        });
+
+      return true;
     },
 
     destroy() {
       if (handle.closed) return;
-      framePump.stop();
       if (handle.sender) {
         try {
           console.log(`[NdiSender] Destroying sender "${name}"`);
@@ -112,7 +125,6 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
       if (handle.destroyPromise) return handle.destroyPromise;
 
       handle.closing = true;
-      framePump.stop();
       handle.destroyPromise = new Promise((resolve) => {
         const start = Date.now();
 
@@ -140,34 +152,10 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
     },
   };
 
-  framePump = createLatestFramePump({
-    send: async (frame) => {
-      if (!handle.ready || !handle.sender || handle.closing) {
-        throw new Error('NDI sender is not ready');
-      }
-
-      handle.sending = true;
-      handle.inflight += 1;
-      try {
-        await handle.sender.video(frame);
-      } finally {
-        handle.sending = false;
-        handle.inflight = Math.max(0, handle.inflight - 1);
-      }
-    },
-    onSendComplete: (details) => callbacks.onSendComplete?.(details),
-    onSendFailure: (err) => callbacks.onSendFailure?.(err),
-  });
-
   grandi.send({ name, clockVideo: true, clockAudio: false })
     .then((sender) => {
-      if (handle.closing || handle.closed) {
-        try { sender.destroy(); } catch { /* ignore */ }
-        return;
-      }
       handle.sender = sender;
       handle.ready = true;
-      framePump.start();
       const srcName = typeof sender.sourcename === 'function' ? sender.sourcename() : name;
       console.log(`[NdiSender] Sender ready: "${srcName}" (${width}x${height} @ ${framerate}fps)`);
     })
