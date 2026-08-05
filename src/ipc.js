@@ -25,6 +25,7 @@ import {
   isOutputEnabled,
   destroyOutputManager,
 } from './outputManager.js';
+import { destroyNdiBackend } from './ndiSender.js';
 
 let server = null;
 let requiredAuthToken = '';
@@ -202,7 +203,10 @@ async function handleMessage(raw, socket) {
       console.log('[IPC] Shutdown requested by main app');
       setTimeout(() => {
         stopIpcServer();
-        Promise.resolve(destroyOutputManager()).finally(() => app.quit());
+        Promise.resolve(destroyOutputManager()).finally(() => {
+          destroyNdiBackend();
+          app.quit();
+        });
       }, 200);
       break;
     }

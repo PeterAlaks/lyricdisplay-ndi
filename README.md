@@ -6,7 +6,7 @@ Headless Electron application that broadcasts [LyricDisplay](https://github.com/
 
 1. The main LyricDisplay app launches this companion automatically.
 2. The companion opens invisible (offscreen) browser windows that load the same output pages you see on screen.
-3. Each frame is captured via Chromium's offscreen rendering and sent over NDI using the [grandi](https://www.npmjs.com/package/grandi) native module.
+3. Each frame is captured at an explicit 1.0 device scale via Chromium's offscreen rendering and sent over NDI using [Grandi 2](https://www.npmjs.com/package/grandi) and the NDI SDK 6 runtime.
 4. NDI receivers on the local network (OBS, vMix, Wirecast, etc.) pick up the streams with full transparency support.
 
 ## Installation
@@ -19,6 +19,8 @@ End users do **not** need to install this manually. The main LyricDisplay app do
 cd lyricdisplay-ndi
 npm install
 ```
+
+Development and packaging require Node.js 22.12 or newer. On Linux, install the Avahi client libraries and run `avahi-daemon` so NDI discovery can operate.
 
 The companion is launched automatically by the main app during development. You can also run it standalone:
 

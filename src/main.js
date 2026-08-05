@@ -16,6 +16,7 @@ import fs from 'fs';
 import { parseArgs } from './cli.js';
 import { startIpcServer, stopIpcServer } from './ipc.js';
 import { initOutputManager, destroyOutputManager } from './outputManager.js';
+import { destroyNdiBackend } from './ndiSender.js';
 import { initSettings } from './settings.js';
 import {
   configureCompanionUserData,
@@ -69,7 +70,10 @@ const shutdown = () => {
   if (shutdownPromise) return shutdownPromise;
   console.log('[Companion] Shutting down…');
   stopIpcServer();
-  shutdownPromise = Promise.resolve(destroyOutputManager()).finally(() => app.quit());
+  shutdownPromise = Promise.resolve(destroyOutputManager()).finally(() => {
+    destroyNdiBackend();
+    app.quit();
+  });
   return shutdownPromise;
 };
 

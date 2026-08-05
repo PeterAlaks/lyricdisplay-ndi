@@ -7,13 +7,45 @@
 
 let grandi = null;
 let loadError = null;
+let backendInitialized = false;
+let sdkVersion = null;
+
+function describeError(error) {
+  if (!error) return null;
+
+  const messages = [];
+  const visited = new Set();
+  const visit = (candidate) => {
+    if (!candidate || visited.has(candidate)) return;
+    visited.add(candidate);
+
+    if (candidate.message && !messages.includes(candidate.message)) {
+      messages.push(candidate.message);
+    }
+    if (Array.isArray(candidate.errors)) {
+      candidate.errors.forEach(visit);
+    }
+    visit(candidate.cause);
+  };
+
+  visit(error);
+  return messages.join(' | ') || String(error);
+}
 
 try {
   const mod = await import('grandi');
-  grandi = mod.default || mod;
+  const candidate = mod.default || mod;
+  if (typeof candidate.initialize !== 'function' || !candidate.initialize()) {
+    throw new Error('The NDI runtime could not initialize on this CPU');
+  }
+
+  grandi = candidate;
+  backendInitialized = true;
+  sdkVersion = typeof grandi.version === 'function' ? grandi.version() : null;
+  console.log(`[NdiSender] Grandi initialized${sdkVersion ? ` (${sdkVersion})` : ''}`);
 } catch (err) {
   loadError = err;
-  console.error('[NdiSender] Failed to load grandi:', err.message);
+  console.error('[NdiSender] Failed to load or initialize grandi:', err);
   console.error('[NdiSender] NDI output will be unavailable.');
 }
 
@@ -45,17 +77,19 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
     return null;
   }
 
-  const FOURCC_BGRA = grandi.FOURCC_BGRA ?? grandi.FourCC?.BGRA;
-  const FORMAT_PROGRESSIVE = grandi.FORMAT_TYPE_PROGRESSIVE ?? grandi.FrameType?.Progressive ?? 1;
+  const FOURCC_BGRA = grandi.FourCC?.BGRA;
+  const FORMAT_PROGRESSIVE = grandi.FrameType?.Progressive;
 
-  if (FOURCC_BGRA == null) {
-    console.error('[NdiSender] Could not resolve FOURCC_BGRA from grandi – NDI output unavailable.');
+  if (FOURCC_BGRA == null || FORMAT_PROGRESSIVE == null) {
+    console.error('[NdiSender] Could not resolve Grandi v2 video enums – NDI output unavailable.');
     return null;
   }
 
   /** @type {NdiSenderHandle} */
   const handle = {
     sender: null,
+    creating: true,
+    createPromise: null,
     name,
     width,
     height,
@@ -81,19 +115,31 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
       handle.sending = true;
       handle.inflight += 1;
 
-      const sendPromise = handle.sender.video({
-        xres: w,
-        yres: h,
-        frameRateN: framerate,
-        frameRateD: 1,
-        pictureAspectRatio: w / h,
-        fourCC: FOURCC_BGRA,
-        frameFormatType: FORMAT_PROGRESSIVE,
-        lineStrideBytes: w * 4,
-        data: bgraBuffer,
-      });
+      let sendPromise;
+      try {
+        sendPromise = handle.sender.video({
+          type: 'video',
+          xres: w,
+          yres: h,
+          frameRateN: framerate,
+          frameRateD: 1,
+          pictureAspectRatio: w / h,
+          fourCC: FOURCC_BGRA,
+          frameFormatType: FORMAT_PROGRESSIVE,
+          lineStrideBytes: w * 4,
+          data: bgraBuffer,
+          timecode: grandi.TIMECODE_SYNTHESIZE,
+        });
+      } catch (err) {
+        handle.sending = false;
+        handle.inflight = Math.max(0, handle.inflight - 1);
+        throw err;
+      }
 
       Promise.resolve(sendPromise)
+        .then(() => {
+          callbacks.onSendComplete?.();
+        })
         .catch((err) => {
           console.error(`[NdiSender] video() error on "${name}":`, err.message);
           callbacks.onSendFailure?.(err);
@@ -101,7 +147,6 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
         .finally(() => {
           handle.sending = false;
           handle.inflight = Math.max(0, handle.inflight - 1);
-          callbacks.onSendComplete?.();
         });
 
       return true;
@@ -109,6 +154,7 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
 
     destroy() {
       if (handle.closed) return;
+      handle.closing = true;
       if (handle.sender) {
         try {
           console.log(`[NdiSender] Destroying sender "${name}"`);
@@ -129,7 +175,7 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
         const start = Date.now();
 
         const check = () => {
-          if (!handle.sender || handle.inflight === 0) {
+          if (!handle.creating && (!handle.sender || handle.inflight === 0)) {
             handle.destroy();
             resolve({ forced: false });
             return;
@@ -150,17 +196,53 @@ export function createNdiSender(name, width, height, framerate, callbacks = {}) 
 
       return handle.destroyPromise;
     },
+
+    getRuntimeState() {
+      if (!handle.ready || !handle.sender || handle.closing) {
+        return {
+          connections: 0,
+          sourceName: name,
+          tally: { onProgram: false, onPreview: false },
+        };
+      }
+
+      try {
+        const tally = handle.sender.tally();
+        return {
+          connections: handle.sender.connections(),
+          sourceName: handle.sender.sourceName(),
+          tally: {
+            onProgram: Boolean(tally?.onProgram),
+            onPreview: Boolean(tally?.onPreview),
+          },
+        };
+      } catch (err) {
+        console.warn(`[NdiSender] Could not read sender state for "${name}":`, err.message);
+        return {
+          connections: 0,
+          sourceName: name,
+          tally: { onProgram: false, onPreview: false },
+        };
+      }
+    },
   };
 
-  grandi.send({ name, clockVideo: true, clockAudio: false })
+  handle.createPromise = grandi.send({ name, clockVideo: true, clockAudio: false })
     .then((sender) => {
+      if (handle.closing || handle.closed) {
+        sender.destroy();
+        return;
+      }
       handle.sender = sender;
       handle.ready = true;
-      const srcName = typeof sender.sourcename === 'function' ? sender.sourcename() : name;
+      const srcName = sender.sourceName();
       console.log(`[NdiSender] Sender ready: "${srcName}" (${width}x${height} @ ${framerate}fps)`);
     })
     .catch((err) => {
       console.error(`[NdiSender] Failed to create sender "${name}":`, err.message);
+    })
+    .finally(() => {
+      handle.creating = false;
     });
 
   return handle;
@@ -170,8 +252,24 @@ export function getNdiBackendState() {
   return {
     available: Boolean(grandi),
     backend: grandi ? 'grandi' : 'unavailable',
-    error: loadError?.message || null,
+    initialized: backendInitialized,
+    sdkVersion,
+    error: describeError(loadError),
   };
+}
+
+export function destroyNdiBackend() {
+  if (!grandi || !backendInitialized) return false;
+
+  try {
+    return grandi.destroy() !== false;
+  } catch (err) {
+    console.error('[NdiSender] Failed to shut down Grandi:', err);
+    return false;
+  } finally {
+    backendInitialized = false;
+    grandi = null;
+  }
 }
 
 /**

@@ -6,7 +6,7 @@
  * captures frames via the `paint` event, and feeds them to an NdiSender.
  */
 
-import { BrowserWindow, screen } from 'electron';
+import { BrowserWindow } from 'electron';
 import { createNdiSender, destroyNdiSender, getNdiBackendState } from './ndiSender.js';
 
 const RESOLUTION_MAP = {
@@ -118,22 +118,23 @@ async function enableOutputNow(outputKey, config = {}) {
     return false;
   }
 
-  const scaleFactor = screen.getPrimaryDisplay().scaleFactor || 1;
-  const logicalW = Math.round(width / scaleFactor);
-  const logicalH = Math.round(height / scaleFactor);
-
   const win = new BrowserWindow({
+    width,
+    height,
     show: false,
     frame: false,
     transparent: true,
     webPreferences: {
-      offscreen: true,
+      offscreen: {
+        useSharedTexture: false,
+        deviceScaleFactor: 1,
+      },
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  win.setContentSize(logicalW, logicalH);
+  win.setContentSize(width, height);
 
   win.webContents.setFrameRate(framerate);
 
@@ -410,6 +411,9 @@ export function getOutputStats() {
   let totalFramesRepeated = 0;
   let totalFramesCoalesced = 0;
   let totalNdiSendFailures = 0;
+  let totalConnections = 0;
+  let totalProgramTallySources = 0;
+  let totalPreviewTallySources = 0;
   let weightedAvgFrameMs = 0;
   let maxP95FrameMs = 0;
   let weightedRenderFps = 0;
@@ -431,6 +435,11 @@ export function getOutputStats() {
   for (const [key, handle] of outputs) {
     const frameStats = computeFrameStats(handle);
     const sendStats = computeSendStats(handle);
+    const senderState = handle.sender?.getRuntimeState?.() || {
+      connections: 0,
+      sourceName: handle.sourceName,
+      tally: { onProgram: false, onPreview: false },
+    };
     const idleThresholdMs = Math.max(1000, (1000 / handle.framerate) * 4);
     const isActivelyPainting = handle.lastPaintTs > 0 && Date.now() - handle.lastPaintTs <= idleThresholdMs;
 
@@ -439,6 +448,9 @@ export function getOutputStats() {
     totalFramesRepeated += handle.framesRepeated;
     totalFramesCoalesced += handle.framesCoalesced;
     totalNdiSendFailures += handle.ndiSendFailures;
+    totalConnections += senderState.connections;
+    if (senderState.tally.onProgram) totalProgramTallySources++;
+    if (senderState.tally.onPreview) totalPreviewTallySources++;
     totalPaintCount += handle.paintCount;
     totalSendCount += handle.sendCount;
 
@@ -487,6 +499,9 @@ export function getOutputStats() {
       actualWidth: handle.actualWidth,
       actualHeight: handle.actualHeight,
       senderReady: handle.sender?.ready || false,
+      connections: senderState.connections,
+      actualSourceName: senderState.sourceName,
+      tally: senderState.tally,
       pageLoaded: handle.pageLoaded,
       loadError: handle.loadError,
       ...frameStats,
@@ -509,14 +524,20 @@ export function getOutputStats() {
     repeated_frames: totalFramesRepeated,
     coalesced_frames: totalFramesCoalesced,
     ndi_send_failures: totalNdiSendFailures,
+    connected_receivers: totalConnections,
+    program_tally_sources: totalProgramTallySources,
+    preview_tally_sources: totalPreviewTallySources,
     avg_frame_ms: avgFrameMs,
     p95_frame_ms: maxP95FrameMs,
     avg_send_ms: avgSendMs,
     p95_send_ms: maxP95SendMs,
     avg_send_jitter_ms: avgSendJitterMs,
+    perOutput,
     outputs: perOutput,
     health: {
       ndi_backend: backendState.backend,
+      ndi_initialized: backendState.initialized,
+      ndi_sdk_version: backendState.sdkVersion,
       warning_flags: warningFlags,
       backend_error: backendState.error,
     },
