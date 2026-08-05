@@ -47,6 +47,8 @@ let useHashRouting = true;
  */
 
 const FRAME_TIME_BUFFER_SIZE = 120; // ~2-4 seconds of samples at 30-60fps
+const CADENCE_LOG_INTERVAL_MS = 60_000;
+let lastCadenceLogTs = 0;
 
 /**
  * Initialise the output manager.
@@ -153,8 +155,13 @@ async function enableOutputNow(outputKey, config = {}) {
     closing: false,
     framesSent: 0,
     framesDropped: 0,
+    framesRepeated: 0,
+    framesCoalesced: 0,
     ndiSendFailures: 0,
     lastPaintTs: 0,
+    lastSendTs: 0,
+    actualWidth: 0,
+    actualHeight: 0,
     frameTimes: new Array(FRAME_TIME_BUFFER_SIZE).fill(0),
     frameTimeIdx: 0,
     prevPaintTs: 0,
@@ -181,6 +188,7 @@ async function enableOutputNow(outputKey, config = {}) {
   handle.sender = createNdiSender(sourceName, width, height, framerate, {
     onSendFailure: (err) => {
       handle.ndiSendFailures++;
+      handle.framesDropped++;
       if (handle.ndiSendFailures <= 3) {
         console.error(`[OutputManager] NDI async send error (${outputKey}):`, err.message);
       }
@@ -194,11 +202,24 @@ async function enableOutputNow(outputKey, config = {}) {
       }
       handle.prevSendTs = now;
       handle.sendCount++;
+      handle.lastSendTs = Date.now();
     },
   });
 
   win.webContents.on('paint', (_event, _dirty, image) => {
     const now = performance.now();
+    const wallNow = Date.now();
+    const idleThresholdMs = Math.max(1000, (1000 / handle.framerate) * 4);
+
+    // Ignore an intentional static-content idle gap in the next cadence sample.
+    if (handle.lastPaintTs > 0 && wallNow - handle.lastPaintTs > idleThresholdMs) {
+      handle.frameTimes.fill(0);
+      handle.frameTimeIdx = 0;
+      handle.prevPaintTs = 0;
+      handle.sendTimes.fill(0);
+      handle.sendTimeIdx = 0;
+      handle.prevSendTs = 0;
+    }
 
     if (handle.prevPaintTs > 0) {
       const delta = now - handle.prevPaintTs;
@@ -212,12 +233,14 @@ async function enableOutputNow(outputKey, config = {}) {
 
     const size = image.getSize();
     if (size.width === 0 || size.height === 0) return;
+    handle.actualWidth = size.width;
+    handle.actualHeight = size.height;
 
     try {
       const accepted = handle.sender.sendFrame(image.toBitmap(), size.width, size.height);
       if (accepted) {
         handle.framesSent++;
-        handle.lastPaintTs = Date.now();
+        handle.lastPaintTs = wallNow;
       } else {
         handle.framesDropped++;
       }
@@ -348,7 +371,7 @@ function computeFrameStats(handle) {
 function computeSendStats(handle) {
   const count = Math.min(handle.sendTimeIdx, FRAME_TIME_BUFFER_SIZE);
   if (count === 0) {
-    return { send_fps: 0 };
+    return { send_fps: 0, avg_send_ms: 0, p95_send_ms: 0, avg_send_jitter_ms: 0 };
   }
 
   const samples = [];
@@ -360,7 +383,20 @@ function computeSendStats(handle) {
   }
 
   const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
-  return { send_fps: avg > 0 ? 1000 / avg : 0 };
+  const sorted = [...samples].sort((a, b) => a - b);
+  const p95Idx = Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1);
+  const targetFrameMs = 1000 / handle.framerate;
+  const avgJitterMs = samples.reduce(
+    (total, sample) => total + Math.abs(sample - targetFrameMs),
+    0
+  ) / samples.length;
+
+  return {
+    send_fps: avg > 0 ? 1000 / avg : 0,
+    avg_send_ms: avg,
+    p95_send_ms: sorted[p95Idx],
+    avg_send_jitter_ms: avgJitterMs,
+  };
 }
 
 /**
@@ -371,11 +407,16 @@ function computeSendStats(handle) {
 export function getOutputStats() {
   let totalFramesSent = 0;
   let totalFramesDropped = 0;
+  let totalFramesRepeated = 0;
+  let totalFramesCoalesced = 0;
   let totalNdiSendFailures = 0;
   let weightedAvgFrameMs = 0;
   let maxP95FrameMs = 0;
   let weightedRenderFps = 0;
   let weightedSendFps = 0;
+  let weightedAvgSendMs = 0;
+  let weightedAvgSendJitterMs = 0;
+  let maxP95SendMs = 0;
   let totalPaintCount = 0;
   let totalSendCount = 0;
 
@@ -390,9 +431,13 @@ export function getOutputStats() {
   for (const [key, handle] of outputs) {
     const frameStats = computeFrameStats(handle);
     const sendStats = computeSendStats(handle);
+    const idleThresholdMs = Math.max(1000, (1000 / handle.framerate) * 4);
+    const isActivelyPainting = handle.lastPaintTs > 0 && Date.now() - handle.lastPaintTs <= idleThresholdMs;
 
     totalFramesSent += handle.framesSent;
     totalFramesDropped += handle.framesDropped;
+    totalFramesRepeated += handle.framesRepeated;
+    totalFramesCoalesced += handle.framesCoalesced;
     totalNdiSendFailures += handle.ndiSendFailures;
     totalPaintCount += handle.paintCount;
     totalSendCount += handle.sendCount;
@@ -400,8 +445,13 @@ export function getOutputStats() {
     weightedAvgFrameMs += frameStats.avg_frame_ms * handle.paintCount;
     weightedRenderFps += frameStats.render_fps * handle.paintCount;
     weightedSendFps += sendStats.send_fps * handle.sendCount;
+    weightedAvgSendMs += sendStats.avg_send_ms * handle.sendCount;
+    weightedAvgSendJitterMs += sendStats.avg_send_jitter_ms * handle.sendCount;
     if (frameStats.p95_frame_ms > maxP95FrameMs) {
       maxP95FrameMs = frameStats.p95_frame_ms;
+    }
+    if (sendStats.p95_send_ms > maxP95SendMs) {
+      maxP95SendMs = sendStats.p95_send_ms;
     }
 
     if (!handle.sender?.ready) {
@@ -410,8 +460,15 @@ export function getOutputStats() {
     if (!handle.pageLoaded) {
       warningFlags.push(`${key}:page_not_loaded`);
     }
-    if (handle.lastPaintTs > 0 && Date.now() - handle.lastPaintTs > 5000) {
+    if (isActivelyPainting && handle.lastSendTs > 0 && Date.now() - handle.lastSendTs > 5000) {
       warningFlags.push(`${key}:frames_stale`);
+    }
+    if (handle.actualWidth > 0 && (handle.actualWidth !== handle.width || handle.actualHeight !== handle.height)) {
+      warningFlags.push(`${key}:render_size_mismatch`);
+    }
+    const cadenceWarmupSamples = Math.min(handle.framerate * 3, FRAME_TIME_BUFFER_SIZE);
+    if (isActivelyPainting && handle.sendTimeIdx >= cadenceWarmupSamples && sendStats.send_fps < handle.framerate * 0.9) {
+      warningFlags.push(`${key}:send_cadence_low`);
     }
 
     perOutput[key] = {
@@ -422,8 +479,13 @@ export function getOutputStats() {
       framerate: handle.framerate,
       framesSent: handle.framesSent,
       framesDropped: handle.framesDropped,
+      framesRepeated: handle.framesRepeated,
+      framesCoalesced: handle.framesCoalesced,
       ndiSendFailures: handle.ndiSendFailures,
       lastPaintTs: handle.lastPaintTs,
+      lastSendTs: handle.lastSendTs,
+      actualWidth: handle.actualWidth,
+      actualHeight: handle.actualHeight,
       senderReady: handle.sender?.ready || false,
       pageLoaded: handle.pageLoaded,
       loadError: handle.loadError,
@@ -436,14 +498,22 @@ export function getOutputStats() {
   const renderFps = totalPaintCount > 0 ? weightedRenderFps / totalPaintCount : 0;
 
   const sendFps = totalSendCount > 0 ? weightedSendFps / totalSendCount : 0;
+  const avgSendMs = totalSendCount > 0 ? weightedAvgSendMs / totalSendCount : 0;
+  const avgSendJitterMs = totalSendCount > 0 ? weightedAvgSendJitterMs / totalSendCount : 0;
 
-  return {
+  const stats = {
     render_fps: renderFps,
     send_fps: sendFps,
+    sent_frames: totalFramesSent,
     dropped_frames: totalFramesDropped,
+    repeated_frames: totalFramesRepeated,
+    coalesced_frames: totalFramesCoalesced,
     ndi_send_failures: totalNdiSendFailures,
     avg_frame_ms: avgFrameMs,
     p95_frame_ms: maxP95FrameMs,
+    avg_send_ms: avgSendMs,
+    p95_send_ms: maxP95SendMs,
+    avg_send_jitter_ms: avgSendJitterMs,
     outputs: perOutput,
     health: {
       ndi_backend: backendState.backend,
@@ -451,6 +521,29 @@ export function getOutputStats() {
       backend_error: backendState.error,
     },
   };
+
+  const now = Date.now();
+  if (outputs.size > 0 && now - lastCadenceLogTs >= CADENCE_LOG_INTERVAL_MS) {
+    lastCadenceLogTs = now;
+    console.log('[OutputManager] Cadence', JSON.stringify({
+      renderFps: Number(renderFps.toFixed(2)),
+      sendFps: Number(sendFps.toFixed(2)),
+      avgSendMs: Number(avgSendMs.toFixed(2)),
+      p95SendMs: Number(maxP95SendMs.toFixed(2)),
+      avgSendJitterMs: Number(avgSendJitterMs.toFixed(2)),
+      droppedFrames: totalFramesDropped,
+      repeatedFrames: totalFramesRepeated,
+      coalescedFrames: totalFramesCoalesced,
+      sendFailures: totalNdiSendFailures,
+      warnings: warningFlags,
+      outputs: Object.fromEntries(Object.entries(perOutput).map(([key, output]) => [key, {
+        target: `${output.width}x${output.height}@${output.framerate}`,
+        actual: output.actualWidth > 0 ? `${output.actualWidth}x${output.actualHeight}` : 'pending',
+      }])),
+    }));
+  }
+
+  return stats;
 }
 
 export function isOutputEnabled(outputKey) {
