@@ -54,7 +54,7 @@ let lastCadenceLogTs = 0;
  * Initialise the output manager.
  * @param {string} appUrl   Base URL of the main LyricDisplay backend
  * @param {object} [opts]
- * @param {boolean} [opts.hashRouting=true]  Use hash-based routing (production)
+ * @param {boolean} [opts.hashRouting=true]  Use hash-based routing when requested by the host app
  */
 export function initOutputManager(appUrl, opts = {}) {
   baseAppUrl = appUrl || baseAppUrl;
